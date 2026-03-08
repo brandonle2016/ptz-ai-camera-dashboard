@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="service-name">PTZ AI Camera Dashboard</div>
+    </header>
+
+    <main class="layout">
+      <section class="card video-card">
+        <div class="card-head">
+          <h2>Live Video</h2>
+          <span class="muted">HTTP MJPEG stream</span>
+        </div>
+        <img id="liveFeed" src="/stream.mjpg" alt="PTZ Live Stream" />
+      </section>
+
+      <aside class="card metrics-card">
+        <div class="card-head">
+          <h2>System Status</h2>
+        </div>
+
+        <section class="metrics-grid">
+          <article class="metric-box">
+            <span class="label">Capture FPS</span>
+            <strong id="captureFps">--</strong>
+          </article>
+          <article class="metric-box">
+            <span class="label">Stream FPS</span>
+            <strong id="streamFps">--</strong>
+          </article>
+          <article class="metric-box">
+            <span class="label">Latency</span>
+            <strong id="latency">--</strong>
+          </article>
+          <article class="metric-box">
+            <span class="label">Inference</span>
+            <strong id="inference">--</strong>
+          </article>
+          <article class="metric-box">
+            <span class="label">Dropped Frames</span>
+            <strong id="drops">--</strong>
+          </article>
+          <article class="metric-box">
+            <span class="label">Temp</span>
+            <strong id="temp">--</strong>
+          </article>
+        </section>
+      </aside>
+    </main>
+
+    <script>
+      async function refreshStatus() {
+        try {
+          const res = await fetch('/api/status');
+          const data = await res.json();
+
+          document.getElementById('captureFps').textContent = `${data.capture_fps.toFixed(1)} fps`;
+          document.getElementById('streamFps').textContent = `${data.stream_fps.toFixed(1)} fps`;
+          document.getElementById('latency').textContent = `${data.latency_ms.toFixed(1)} ms`;
+          document.getElementById('inference').textContent = `${data.inference_ms.toFixed(1)} ms`;
+          document.getElementById('drops').textContent = `${data.dropped_frames}`;
+          document.getElementById('temp').textContent = data.temp_c == null ? 'n/a' : `${data.temp_c.toFixed(1)} C`;
+        } catch {
+          document.getElementById('captureFps').textContent = '--';
+          document.getElementById('streamFps').textContent = '--';
+          document.getElementById('latency').textContent = '--';
+          document.getElementById('inference').textContent = '--';
+          document.getElementById('drops').textContent = '--';
+          document.getElementById('temp').textContent = '--';
+        }
+      }
+
+      refreshStatus();
+      setInterval(refreshStatus, 1000);
+    </script>
+  </body>
+</html>
