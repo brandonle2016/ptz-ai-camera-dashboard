@@ -1,128 +1,111 @@
-# PTZ AI Camera Dashboard (Prototype)
+# PTZ AI Camera Dashboard (CSI + YOLO)
 
-Minimal Jetson-oriented architecture for a browser-viewable PTZ AI demo.
-
-## Goals Covered
-- Live capture via GStreamer using `videotestsrc` (no camera hardware needed)
-- Simulated AI overlay stage (replace later with Ultralytics YOLO26)
-- Live browser stream over HTTP (MJPEG)
-- Dashboard page with status panel (`fps`, `latency`, `temp`)
-- Latest-frame-wins behavior (drops stale frames under load)
+This app is now intentionally fixed to one runtime path:
+- CSI camera ingest via `nvarguscamerasrc` (GStreamer)
+- YOLO tracking inference (`model.track(..., persist=True)`)
+- HTTP MJPEG stream for browser viewing
+- Status API for fps/latency/inference/drop counters
 
 ## Project Structure
 
 ```text
 ptz-ai-dashboard/
   app/
-    __init__.py
-    config.py          # runtime settings + source pipeline switch
-    main.py            # FastAPI app, routes, startup/shutdown
+    config.py          # CSI pipeline + runtime settings
+    pipeline.py        # capture thread + YOLO thread + latest frame buffering
     metrics.py         # fps/latency/temp counters
-    pipeline.py        # capture thread + AI thread + latest frame buffering
-    static/
-      style.css
+    main.py            # FastAPI routes and startup
     templates/
       index.html
+    static/
+      style.css
   requirements.txt
-  README.md
 ```
 
-## Architecture (Current)
+## Runtime Behavior
 
-1. GStreamer capture thread
-- Opens `cv2.VideoCapture(<gstreamer pipeline>, cv2.CAP_GSTREAMER)`.
-- Default source is `videotestsrc is-live=true`.
-- Writes only the newest frame into a shared buffer.
+1. Capture thread
+- Opens CSI GStreamer pipeline from `config.py`.
+- Reads frames continuously.
+- Keeps only the newest raw frame (single-slot buffer).
 
-2. AI overlay thread
+2. YOLO thread
 - Pulls newest unprocessed frame only.
-- Simulates inference latency (`SIM_INFERENCE_MS`, default `45ms`).
-- Draws demo bounding box/label onto frame.
-- Encodes JPEG and publishes as newest output frame.
+- Runs `model.track(frame, persist=True)`.
+- Draws overlay using `results[0].plot()`.
+- Publishes newest JPEG frame for `/stream.mjpg`.
 
-3. HTTP serving layer
-- `GET /stream.mjpg`: multipart MJPEG stream.
-- `GET /api/status`: JSON metrics.
-- `GET /`: dashboard page.
-
-4. Latest-frame-wins strategy
-- Shared single-slot frame buffer (`_raw_latest`).
-- If capture produces new frame before AI consumes previous, old one is dropped.
-- This keeps latency bounded and avoids queue buildup.
+3. Latest-frame-wins
+- If inference is busy, older raw frames are overwritten.
+- This avoids queue growth and keeps latency bounded.
 
 ## Dependencies
 
-Python packages in `requirements.txt`:
-- `fastapi`, `uvicorn[standard]`
-- `opencv-python`
-- `numpy`
-- `psutil`
-- `jinja2`
+Python:
+- fastapi
+- uvicorn[standard]
+- opencv-python
+- numpy
+- psutil
+- jinja2
+- ultralytics
 
-System deps (needed for OpenCV GStreamer pipeline):
-- GStreamer runtime/plugins installed on host
-- OpenCV build with GStreamer support
+System (Jetson):
+- JetPack 5
+- Working CSI camera
+- GStreamer with `nvarguscamerasrc`
+- OpenCV runtime that can open GStreamer pipelines
 
-## Local Dev (Now, No Camera)
-
-From project root:
-
-```bash
-cd ptz-ai-dashboard
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-Open in browser:
-- [http://localhost:8000](http://localhost:8000)
-
-Optional environment variables:
+## Environment Variables
 
 ```bash
-export SOURCE_MODE=synthetic   # synthetic | test | csi
+export APP_HOST=0.0.0.0
+export APP_PORT=8000
+
 export FRAME_WIDTH=1280
 export FRAME_HEIGHT=720
 export FRAME_FPS=30
 export JPEG_QUALITY=80
-export SIM_INFERENCE_MS=45
+
+export CSI_SENSOR_ID=0
+export CSI_FLIP_METHOD=2
+
+export YOLO_MODEL_PATH=/path/to/yolo26n.engine
 ```
 
-## Jetson Notes (Later)
-
-### 1) Switch capture source to CSI/MIPI
-Set:
+## Run
 
 ```bash
-export SOURCE_MODE=csi
+cd /home/camera/ptz-ai-dashboard
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-`config.py` already maps this to `nvarguscamerasrc`.
+## Known Good Jetson Run
 
-For desktop/mac demo with OpenCV builds that do not include GStreamer support, use:
+Use this exact block on Jetson if camera startup is flaky or plugins are busy:
 
 ```bash
-export SOURCE_MODE=synthetic
+pkill -f uvicorn || true
+pkill -f camera_test1.py || true
+pkill -f gst-launch-1.0 || true
+
+cd /home/camera/ptz-ai-dashboard
+source .venv/bin/activate
+
+export YOLO_MODEL_PATH="/home/camera/Desktop/share/yolo26n.engine"
+export LD_PRELOAD=/lib/aarch64-linux-gnu/libGLdispatch.so.0:/usr/lib/aarch64-linux-gnu/libgomp.so.1
+export OPENCV_VIDEOIO_PRIORITY_GSTREAMER=1000
+
+python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-### 2) Replace simulated AI with YOLO26
-In `app/pipeline.py`, replace `_simulate_ai_overlay(...)` with:
-- frame preprocessing for YOLO
-- model inference call
-- postprocess boxes/classes/confidence
-- draw overlays onto frame
-
-Keep the same latest-frame-wins behavior by preserving:
-- single-slot raw frame buffer
-- one inference worker processing newest frame only
-
-### 3) Performance tuning on Jetson
-- Reduce input resolution or inference interval if latency climbs.
-- Consider NVMM zero-copy + hardware codecs where possible.
-- If needed later, split ingest/inference/streaming into separate processes with shared memory.
+Open:
+- http://localhost:8000
 
 ## Endpoints
 - `GET /` dashboard UI
-- `GET /stream.mjpg` live video stream
+- `GET /stream.mjpg` live stream
 - `GET /api/status` metrics JSON

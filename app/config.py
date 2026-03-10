@@ -10,24 +10,18 @@ class Settings:
     height: int = int(os.getenv("FRAME_HEIGHT", "720"))
     fps: int = int(os.getenv("FRAME_FPS", "30"))
     jpeg_quality: int = int(os.getenv("JPEG_QUALITY", "80"))
-    inference_ms: float = float(os.getenv("SIM_INFERENCE_MS", "45"))
-
-    source_mode: str = os.getenv("SOURCE_MODE", "synthetic")
+    yolo_model_path: str = os.getenv("YOLO_MODEL_PATH", "yolo26n.engine")
+    sensor_id: int = int(os.getenv("CSI_SENSOR_ID", "0"))
+    flip_method: int = int(os.getenv("CSI_FLIP_METHOD", "2"))
 
     @property
     def gstreamer_pipeline(self) -> str:
-        if self.source_mode == "csi":
-            return (
-                "nvarguscamerasrc ! "
-                f"video/x-raw(memory:NVMM), width={self.width}, height={self.height}, "
-                f"framerate={self.fps}/1 ! "
-                "nvvidconv ! video/x-raw, format=BGRx ! "
-                "videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1 sync=false"
-            )
-
         return (
-            "videotestsrc is-live=true pattern=ball ! "
-            f"video/x-raw, width={self.width}, height={self.height}, framerate={self.fps}/1 ! "
-            "videoconvert ! video/x-raw, format=BGR ! "
-            "appsink drop=true max-buffers=1 sync=false"
+            f"nvarguscamerasrc sensor-id={self.sensor_id} ! "
+            f"video/x-raw(memory:NVMM), width=(int){self.width}, height=(int){self.height}, "
+            f"framerate=(fraction){self.fps}/1 ! "
+            f"nvvidconv flip-method={self.flip_method} ! "
+            f"video/x-raw, width=(int){self.width}, height=(int){self.height}, format=(string)BGRx ! "
+            "videoconvert ! video/x-raw, format=(string)BGR ! "
+            "appsink"
         )

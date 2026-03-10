@@ -2,6 +2,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from typing import Deque, Optional
 
 import psutil
 
@@ -9,8 +10,8 @@ import psutil
 @dataclass
 class Metrics:
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
-    _capture_ts: deque = field(default_factory=lambda: deque(maxlen=120), init=False)
-    _output_ts: deque = field(default_factory=lambda: deque(maxlen=120), init=False)
+    _capture_ts: Deque[float] = field(default_factory=lambda: deque(maxlen=120), init=False)
+    _output_ts: Deque[float] = field(default_factory=lambda: deque(maxlen=120), init=False)
     _latency_ms: float = 0.0
     _inference_ms: float = 0.0
     _dropped_frames: int = 0
@@ -32,7 +33,7 @@ class Metrics:
         with self._lock:
             self._dropped_frames += 1
 
-    def _fps(self, timestamps: deque) -> float:
+    def _fps(self, timestamps: Deque[float]) -> float:
         if len(timestamps) < 2:
             return 0.0
         dt = timestamps[-1] - timestamps[0]
@@ -40,7 +41,7 @@ class Metrics:
             return 0.0
         return (len(timestamps) - 1) / dt
 
-    def _read_temp_c(self) -> float | None:
+    def _read_temp_c(self) -> Optional[float]:
         try:
             temps = psutil.sensors_temperatures()
         except Exception:

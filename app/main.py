@@ -46,29 +46,31 @@ async def index(request: Request) -> HTMLResponse:
 
 @app.get("/api/status", response_class=JSONResponse)
 async def status() -> JSONResponse:
-    payload = metrics.snapshot()
-    payload["source_mode"] = settings.source_mode
-    return JSONResponse(payload)
+    return JSONResponse(metrics.snapshot())
 
 
 @app.get("/stream.mjpg")
 async def stream_mjpeg() -> StreamingResponse:
     async def generate():
         boundary = b"--frame\r\n"
-        while True:
-            frame = pipeline.latest_jpeg()
-            if frame is None:
-                await asyncio.sleep(0.01)
-                continue
+        try:
+            while True:
+                frame = pipeline.latest_jpeg()
+                if frame is None:
+                    await asyncio.sleep(0.01)
+                    continue
 
-            yield (
-                boundary
-                + b"Content-Type: image/jpeg\r\n"
-                + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
-                + frame
-                + b"\r\n"
-            )
-            await asyncio.sleep(0.001)
+                yield (
+                    boundary
+                    + b"Content-Type: image/jpeg\r\n"
+                    + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
+                    + frame
+                    + b"\r\n"
+                )
+                await asyncio.sleep(0.001)
+        except asyncio.CancelledError:
+            # Expected when client refreshes/closes the stream.
+            return
 
     return StreamingResponse(
         generate(),
