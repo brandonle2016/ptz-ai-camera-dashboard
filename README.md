@@ -1,7 +1,7 @@
 # PTZ AI Camera Dashboard (CSI + YOLO)
 
 This app is now intentionally fixed to one runtime path:
-- CSI camera ingest via `nvarguscamerasrc` (GStreamer)
+- CSI camera ingest via native GStreamer (`nvarguscamerasrc` -> `appsink`)
 - YOLO tracking inference (`model.track(..., persist=True)`)
 - HTTP MJPEG stream for browser viewing
 - Status API for fps/latency/inference/drop counters
@@ -54,7 +54,20 @@ System (Jetson):
 - JetPack 5
 - Working CSI camera
 - GStreamer with `nvarguscamerasrc`
-- OpenCV runtime that can open GStreamer pipelines
+- Python GStreamer bindings: `python3-gi`, `gir1.2-gstreamer-1.0`
+
+## First-Time Jetson Setup
+
+```bash
+cd /home/camera/ptz-ai-dashboard
+sudo apt update
+sudo apt install -y python3-venv python3-gi gir1.2-gstreamer-1.0
+
+# Use system site packages so gi/GStreamer bindings are visible in venv.
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+```
 
 ## Environment Variables
 
@@ -73,19 +86,9 @@ export CSI_FLIP_METHOD=2
 export YOLO_MODEL_PATH=/path/to/yolo26n.engine
 ```
 
-## Run
+## Known good run
 
-```bash
-cd /home/camera/ptz-ai-dashboard
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-## Known Good Jetson Run
-
-Use this exact block on Jetson if camera startup is flaky or plugins are busy:
+Use this exact block on Jetson terminal:
 
 ```bash
 pkill -f uvicorn || true
@@ -103,7 +106,21 @@ python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Open:
-- http://localhost:8000
+- on Jetson browser: `http://127.0.0.1:8000`
+- on laptop (same network): `http://<jetson-ip>:8000`
+
+## How to SSH from laptop
+Get Jetson IP:
+
+```bash
+hostname -I
+```
+
+SSH from laptop:
+
+```bash
+ssh camera@<jetson-ip>
+```
 
 ## Endpoints
 - `GET /` dashboard UI

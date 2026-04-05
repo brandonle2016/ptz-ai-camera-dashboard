@@ -16,6 +16,14 @@ from ultralytics import YOLO
 from .config import Settings
 from .metrics import Metrics
 
+try:
+    import gi
+
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst
+except Exception:
+    Gst = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 _CAPTURE_RETRY_SLEEP_S = 0.005
@@ -35,7 +43,8 @@ class PipelineService:
         self.settings = settings
         self.metrics = metrics
 
-        self._capture: Optional[cv2.VideoCapture] = None
+        self._gst_pipeline: Optional[Any] = None
+        self._gst_sink: Optional[Any] = None
         self._running = threading.Event()
         self._threads: List[threading.Thread] = []
 
@@ -53,18 +62,27 @@ class PipelineService:
     def _init_ai_backend(self) -> None:
         self._yolo_model = YOLO(self.settings.yolo_model_path, task="detect")
 
-    def _open_capture(self) -> cv2.VideoCapture:
-        capture = cv2.VideoCapture(self.settings.gstreamer_pipeline, cv2.CAP_GSTREAMER)
-        if not capture.isOpened():
+    def _open_capture(self) -> None:
+        if Gst is None:
             raise RuntimeError(
-                "Could not open CSI GStreamer pipeline. "
-                "Verify camera wiring, nvarguscamerasrc, and runtime environment."
+                "GStreamer Python bindings are unavailable. Install python3-gi and "
+                "gir1.2-gstreamer-1.0 on Jetson."
             )
-        return capture
+
+        Gst.init(None)
+        pipeline = Gst.parse_launch(self.settings.gstreamer_pipeline)
+        sink = pipeline.get_by_name("appsink0")
+        if sink is None:
+            pipeline.set_state(Gst.State.NULL)
+            raise RuntimeError("Could not find appsink0 in GStreamer pipeline.")
+
+        pipeline.set_state(Gst.State.PLAYING)
+        self._gst_pipeline = pipeline
+        self._gst_sink = sink
 
     def start(self) -> None:
         self._init_ai_backend()
-        self._capture = self._open_capture()
+        self._open_capture()
 
         self._running.set()
         self._threads = [
@@ -80,19 +98,25 @@ class PipelineService:
             thread.join(timeout=1.5)
         self._threads.clear()
 
-        if self._capture is not None:
-            self._capture.release()
-            self._capture = None
+        if self._gst_pipeline is not None and Gst is not None:
+            self._gst_pipeline.set_state(Gst.State.NULL)
+            self._gst_pipeline = None
+            self._gst_sink = None
 
     def latest_jpeg(self) -> Optional[bytes]:
         with self._out_lock:
             return self._out_latest_jpeg
 
     def _capture_loop(self) -> None:
-        assert self._capture is not None
+        assert self._gst_sink is not None
         while self._running.is_set():
-            ok, frame = self._capture.read()
-            if not ok:
+            sample = self._gst_sink.emit("try-pull-sample", 50_000_000)  # 50ms in nanoseconds
+            if sample is None:
+                time.sleep(_CAPTURE_RETRY_SLEEP_S)
+                continue
+
+            frame = self._sample_to_bgr_frame(sample)
+            if frame is None:
                 time.sleep(_CAPTURE_RETRY_SLEEP_S)
                 continue
 
@@ -148,6 +172,34 @@ class PipelineService:
         if not ok:
             return b""
         return encoded.tobytes()
+
+    def _sample_to_bgr_frame(self, sample: Any) -> Optional[np.ndarray]:
+        if Gst is None:
+            return None
+
+        buffer = sample.get_buffer()
+        caps = sample.get_caps()
+        if buffer is None or caps is None:
+            return None
+
+        structure = caps.get_structure(0)
+        if structure is None:
+            return None
+
+        ok_w, width = structure.get_int("width")
+        ok_h, height = structure.get_int("height")
+        if not ok_w or not ok_h:
+            return None
+
+        ok_map, map_info = buffer.map(Gst.MapFlags.READ)
+        if not ok_map:
+            return None
+
+        try:
+            frame = np.frombuffer(map_info.data, dtype=np.uint8).reshape((height, width, 3)).copy()
+            return frame
+        finally:
+            buffer.unmap(map_info)
 
     def _run_yolo_track(self, frame: np.ndarray) -> np.ndarray:
         if self._yolo_model is None:

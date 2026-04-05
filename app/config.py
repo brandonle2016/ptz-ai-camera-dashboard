@@ -23,5 +23,5 @@ class Settings:
             f"nvvidconv flip-method={self.flip_method} ! "
             f"video/x-raw, width=(int){self.width}, height=(int){self.height}, format=(string)BGRx ! "
             "videoconvert ! video/x-raw, format=(string)BGR ! "
-            "appsink"
+            "appsink name=appsink0 emit-signals=false drop=true max-buffers=1 sync=false"
         )
