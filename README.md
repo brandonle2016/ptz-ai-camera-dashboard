@@ -92,6 +92,19 @@ Open:
 The "Detected Objects" panel in the dashboard is now fed by `/api/detections`.
 The Track buttons are present in UI and intentionally no-op for now.
 
+## How to SSH from laptop
+Get Jetson IP:
+
+```bash
+hostname -I
+```
+
+SSH from laptop:
+
+```bash
+ssh camera@<jetson-ip>
+```
+
 ## Notes
 
 - If `mediamtx` path is different, update `MEDIAMTX_DIR`/`MEDIAMTX_BIN`.
