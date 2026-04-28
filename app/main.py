@@ -49,33 +49,33 @@ async def status() -> JSONResponse:
     return JSONResponse(metrics.snapshot())
 
 
-@app.get("/stream.mjpg")
-async def stream_mjpeg() -> StreamingResponse:
-    async def generate():
-        boundary = b"--frame\r\n"
-        try:
-            while True:
-                frame = pipeline.latest_jpeg()
-                if frame is None:
-                    await asyncio.sleep(0.01)
-                    continue
-
-                yield (
-                    boundary
-                    + b"Content-Type: image/jpeg\r\n"
-                    + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
-                    + frame
-                    + b"\r\n"
-                )
-                await asyncio.sleep(0.001)
-        except asyncio.CancelledError:
-            # Expected when client refreshes/closes the stream.
-            return
-
-    return StreamingResponse(
-        generate(),
-        media_type="multipart/x-mixed-replace; boundary=frame",
-    )
+#@app.get("/stream.mjpg")
+#async def stream_mjpeg() -> StreamingResponse:
+#    async def generate():
+#        boundary = b"--frame\r\n"
+#        try:
+#            while True:
+#                frame = pipeline.latest_jpeg()
+#                if frame is None:
+#                    await asyncio.sleep(0.01)
+#                    continue#
+#
+#                yield (
+#                    boundary
+#                    + b"Content-Type: image/jpeg\r\n"
+#                    + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
+#                    + frame
+#                    + b"\r\n"
+#                )
+#                await asyncio.sleep(0.001)
+#        except asyncio.CancelledError:
+#            # Expected when client refreshes/closes the stream.
+#            return#
+#
+#    return StreamingResponse(
+#        generate(),
+#        media_type="multipart/x-mixed-replace; boundary=frame",
+#    )
 
 
 if __name__ == "__main__":

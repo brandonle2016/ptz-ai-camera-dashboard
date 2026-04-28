@@ -1,6 +1,8 @@
 import logging
 import threading
 import time
+import subprocess
+import signal
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
@@ -58,6 +60,10 @@ class PipelineService:
         self._last_processed_seq = -1
         self._yolo_model: Optional[Any] = None
         self._last_infer_error_ts = 0.0
+        
+        self._encode_lock = threading.Lock()
+        self._encode_latest: Optional[tuple] = None
+        self._video_writer: Optional[cv2.VideoWriter] = None
 
     def _init_ai_backend(self) -> None:
         self._yolo_model = YOLO(self.settings.yolo_model_path, task="detect")
@@ -81,6 +87,7 @@ class PipelineService:
         self._gst_sink = sink
 
     def start(self) -> None:
+        self._start_background_services()
         self._init_ai_backend()
         self._open_capture()
 
@@ -88,24 +95,109 @@ class PipelineService:
         self._threads = [
             threading.Thread(target=self._capture_loop, daemon=True, name="capture-loop"),
             threading.Thread(target=self._ai_loop, daemon=True, name="ai-loop"),
+            threading.Thread(target=self._encoder_loop, daemon=True, name="encoder-loop"),
         ]
         for thread in self._threads:
             thread.start()
 
+    def _open_writer(self) -> None:
+        """Blindly fires RTP packets to a local UDP port to prevent Python deadlocks."""
+        out_pipeline = (
+            "appsrc do-timestamp=true is-live=true ! "
+            "video/x-raw, format=BGR ! "
+            "queue max-size-buffers=1 leaky=downstream ! "
+            "videoconvert ! "
+            "video/x-raw, format=I420 ! "
+            f"x264enc bitrate={self.settings.stream_bitrate_kbps} speed-preset=ultrafast tune=zerolatency ! "
+            "rtph264pay config-interval=1 pt=96 ! "
+            "udpsink host=127.0.0.1 port=5000 sync=false"
+        )
+        
+        self._video_writer = cv2.VideoWriter(
+            out_pipeline, 
+            cv2.CAP_GSTREAMER, 
+            0, 
+            self.settings.fps, 
+            (self.settings.stream_width, self.settings.stream_height)
+        )
+        self._video_writer = cv2.VideoWriter(
+            out_pipeline, 
+            cv2.CAP_GSTREAMER, 
+            0, 
+            self.settings.fps, 
+            (self.settings.stream_width, self.settings.stream_height)
+        )
+        
+        if not self._video_writer.isOpened():
+            logger.error("Failed to open GStreamer H.264 VideoWriter!")
+        
+        self._video_writer = cv2.VideoWriter(
+            out_pipeline, 
+            cv2.CAP_GSTREAMER, 
+            0, 
+            self.settings.fps, 
+            (self.settings.stream_width, self.settings.stream_height)
+        )
+        
+        if not self._video_writer.isOpened():
+            logger.error("Failed to open GStreamer H.264 VideoWriter!")
+        
+        if not self._video_writer.isOpened():
+            logger.error("Failed to open GStreamer H.264 VideoWriter!")
+            
+    def _start_background_services(self) -> None:
+        """Launches MediaMTX and the GStreamer Bridge automatically."""
+        try:
+            # 1. Start MediaMTX (Assumes the binary is in the path or same folder)
+            # Adjust the path to where your mediamtx binary actually is
+            self._mediamtx_proc = subprocess.Popen(
+                ["./mediamtx"], 
+                cwd="/home/camera/Downloads/mediamtx_v1.17.1_linux_arm64", # Use your actual path
+                stdout=subprocess.DEVNULL, 
+                stderr=subprocess.DEVNULL
+            )
+            logger.info("MediaMTX started in background.")
+
+            # 2. Wait a moment for MediaMTX to open its ports
+            time.sleep(2)
+
+            # 3. Start the Bridge Command
+            bridge_cmd = [
+                "gst-launch-1.0", "udpsrc", "port=5000", 
+                "caps=application/x-rtp,media=video,clock-rate=90000,encoding-name=H264", 
+                "!", "rtph264depay", "!", "h264parse", 
+                "!", "rtspclientsink", "location=rtsp://127.0.0.1:8554/ai_cam", "protocols=tcp"
+            ]
+            self._bridge_proc = subprocess.Popen(bridge_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            logger.info("GStreamer Bridge started in background.")
+
+        except Exception as e:
+            logger.error(f"Failed to start background services: {e}")
+            
     def stop(self) -> None:
         self._running.clear()
+        
+        if hasattr(self, '_bridge_proc'):
+            self._bridge_proc.terminate()
+        if hasattr(self, '_mediamtx_proc'):
+            self._mediamtx_proc.terminate()
+        
         for thread in self._threads:
             thread.join(timeout=1.5)
         self._threads.clear()
+        
+        if self._video_writer is not None:
+            self._video_writer.release()
+            self._video_writer = None
 
         if self._gst_pipeline is not None and Gst is not None:
             self._gst_pipeline.set_state(Gst.State.NULL)
             self._gst_pipeline = None
             self._gst_sink = None
 
-    def latest_jpeg(self) -> Optional[bytes]:
-        with self._out_lock:
-            return self._out_latest_jpeg
+    #def latest_jpeg(self) -> Optional[bytes]:
+     #   with self._out_lock:
+     #       return self._out_latest_jpeg
 
     def _capture_loop(self) -> None:
         assert self._gst_sink is not None
@@ -131,17 +223,57 @@ class PipelineService:
                 continue
 
             start = time.time()
-            overlay = self._run_yolo_track(packet.frame.copy())
+            results = self._yolo_model.predict(packet.frame, imgsz=640, verbose=False)
+            
+            # overlay = self._run_yolo_track(packet.frame.copy())
             inference_ms = (time.time() - start) * 1000.0
             latency_ms = (time.time() - packet.captured_at) * 1000.0
 
-            encoded = self._encode_jpeg(overlay)
-
-            with self._out_lock:
-                self._out_latest_jpeg = encoded
-
-            self.metrics.mark_output()
+            #encoded = self._encode_jpeg(overlay)
+            with self._encode_lock:
+            	self._encode_latest = (packet.frame, results)
             self.metrics.set_timing(latency_ms=latency_ms, inference_ms=inference_ms)
+
+            #with self._out_lock:
+            #    self._out_latest_jpeg = encoded
+
+            #self.metrics.mark_output()
+            #self.metrics.set_timing(latency_ms=latency_ms, inference_ms=inference_ms)
+            
+    def _encoder_loop(self) -> None:
+        """Runs in a 3rd thread to keep the GPU fed."""
+        self._open_writer()
+       
+        while self._running.is_set():
+            
+            # Grab the latest data from the AI loop safely
+            with self._encode_lock:
+                if self._encode_latest is None:
+                    data = None
+                else:
+                    data = self._encode_latest
+                    self._encode_latest = None  # Clear it so we don't re-encode the same frame
+            
+            # If no new frame from AI, sleep briefly
+            if data is None:
+                time.sleep(_AI_IDLE_SLEEP_S)
+                continue
+
+            frame, results = data
+            
+            # Plotting happens here, freeing up the AI thread
+            if results and len(results) > 0:
+                overlay = results[0].plot()
+            else:
+                overlay = frame
+                
+            overlay = cv2.resize(overlay, (self.settings.stream_width,self.settings.stream_height))
+
+            # Push the frame directly to the GStreamer encoder
+            if self._video_writer is not None:
+            	self._video_writer.write(overlay)
+            
+            self.metrics.mark_output()
 
     def _next_frame_for_processing(self) -> Optional[FramePacket]:
         with self._raw_lock:
@@ -163,15 +295,15 @@ class PipelineService:
                 self.metrics.mark_drop()
             self._raw_latest = packet
 
-    def _encode_jpeg(self, frame: np.ndarray) -> bytes:
-        ok, encoded = cv2.imencode(
-            ".jpg",
-            frame,
-            [int(cv2.IMWRITE_JPEG_QUALITY), self.settings.jpeg_quality],
-        )
-        if not ok:
-            return b""
-        return encoded.tobytes()
+    #def _encode_jpeg(self, frame: np.ndarray, quality: int = 50) -> bytes:
+    #    ok, encoded = cv2.imencode(
+     #       ".jpg",
+     #       frame,
+     #       [int(cv2.IMWRITE_JPEG_QUALITY), quality],
+     #   )
+      #  if not ok:
+      #      return b""
+      #  return encoded.tobytes()
 
     def _sample_to_bgr_frame(self, sample: Any) -> Optional[np.ndarray]:
         if Gst is None:
