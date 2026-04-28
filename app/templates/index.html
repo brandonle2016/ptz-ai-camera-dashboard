@@ -15,9 +15,17 @@
       <section class="card video-card">
         <div class="card-head">
           <h2>Live Video</h2>
-          <span class="muted">HTTP MJPEG stream</span>
+          <span class="muted">WebRTC H.264 stream</span>
         </div>
-        <img id="liveFeed" src="/stream.mjpg" alt="PTZ Live Stream" />
+        <iframe
+          id="ai-video-feed"
+          src="{{ stream_url }}"
+          style="width: 100%; aspect-ratio: 16 / 9"
+          width="1280"
+          height="720"
+          scrolling="no"
+          frameborder="0"
+        ></iframe>
       </section>
 
       <aside class="card metrics-card">

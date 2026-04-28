@@ -1,75 +1,48 @@
-# PTZ AI Camera Dashboard (CSI + YOLO)
+# PTZ AI Camera Dashboard (CSI + YOLO + H.264/WebRTC)
 
-This app is now intentionally fixed to one runtime path:
-- CSI camera ingest via native GStreamer (`nvarguscamerasrc` -> `appsink`)
-- YOLO tracking inference (`model.track(..., persist=True)`)
-- HTTP MJPEG stream for browser viewing
-- Status API for fps/latency/inference/drop counters
+This app runs on Jetson and does:
+- CSI capture via GStreamer (`nvarguscamerasrc`)
+- YOLO inference (`ultralytics`, TensorRT engine supported)
+- Latest-frame-wins processing (drops stale frames)
+- H.264 output to MediaMTX, viewed in browser via WebRTC page
+- Status API for capture fps, stream fps, latency, inference, drops, temp
 
-## Project Structure
+Validated profile: 1280x720 at 60 FPS on Jetson (when camera and runtime support it).
+
+## Runtime Paths
+
+- Dashboard: `GET /`
+- Status: `GET /api/status`
+- Media stream page (via MediaMTX): `http://<jetson-ip>:8889/ai_cam/` by default
+
+## Project Layout
 
 ```text
 ptz-ai-dashboard/
   app/
-    config.py          # CSI pipeline + runtime settings
-    pipeline.py        # capture thread + YOLO thread + latest frame buffering
-    metrics.py         # fps/latency/temp counters
-    main.py            # FastAPI routes and startup
-    templates/
-      index.html
-    static/
-      style.css
+    config.py
+    main.py
+    metrics.py
+    pipeline.py
+    templates/index.html
+    static/style.css
   requirements.txt
+  README.md
 ```
 
-## Runtime Behavior
-
-1. Capture thread
-- Opens CSI GStreamer pipeline from `config.py`.
-- Reads frames continuously.
-- Keeps only the newest raw frame (single-slot buffer).
-
-2. YOLO thread
-- Pulls newest unprocessed frame only.
-- Runs `model.track(frame, persist=True)`.
-- Draws overlay using `results[0].plot()`.
-- Publishes newest JPEG frame for `/stream.mjpg`.
-
-3. Latest-frame-wins
-- If inference is busy, older raw frames are overwritten.
-- This avoids queue growth and keeps latency bounded.
-
-## Dependencies
-
-Python:
-- fastapi
-- uvicorn[standard]
-- opencv-python
-- numpy
-- psutil
-- jinja2
-- ultralytics
-
-System (Jetson):
-- JetPack 5
-- Working CSI camera
-- GStreamer with `nvarguscamerasrc`
-- Python GStreamer bindings: `python3-gi`, `gir1.2-gstreamer-1.0`
-
-## First-Time Jetson Setup
+## Jetson Setup
 
 ```bash
-cd /home/camera/ptz-ai-dashboard
+cd /home/camera/ptz-ai-camera-dashboard
 sudo apt update
 sudo apt install -y python3-venv python3-gi gir1.2-gstreamer-1.0
 
-# Use system site packages so gi/GStreamer bindings are visible in venv.
 python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 ```
 
-## Environment Variables
+## Required Env Vars
 
 ```bash
 export APP_HOST=0.0.0.0
@@ -77,52 +50,45 @@ export APP_PORT=8000
 
 export FRAME_WIDTH=1280
 export FRAME_HEIGHT=720
-export FRAME_FPS=30
-export JPEG_QUALITY=80
+export FRAME_FPS=60
+
+export STREAM_WIDTH=1280
+export STREAM_HEIGHT=720
+export STREAM_BITRATE=2500
 
 export CSI_SENSOR_ID=0
 export CSI_FLIP_METHOD=2
 
-export YOLO_MODEL_PATH=/path/to/yolo26n.engine
+export YOLO_MODEL_PATH="/home/camera/Desktop/share/yolo26n.engine"
+
+export MEDIAMTX_DIR="/home/camera/Downloads/mediamtx_v1.17.1_linux_arm64"
+export MEDIAMTX_BIN="./mediamtx"
+export MEDIAMTX_RTSP_PORT=8554
+export MEDIAMTX_WEBRTC_PORT=8889
+export STREAM_PATH="ai_cam"
+
+export UDP_HOST=127.0.0.1
+export UDP_PORT=5000
 ```
 
-## Known good run
-
-Use this exact block on Jetson terminal:
+## Run
 
 ```bash
 pkill -f uvicorn || true
-pkill -f camera_test1.py || true
-pkill -f gst-launch-1.0 || true
+pkill -f mediamtx || true
+pkill -f "gst-launch-1.0 udpsrc" || true
 
-cd /home/camera/ptz-ai-dashboard
+cd /home/camera/ptz-ai-camera-dashboard
 source .venv/bin/activate
-
-export YOLO_MODEL_PATH="/home/camera/Desktop/share/yolo26n.engine"
-export LD_PRELOAD=/lib/aarch64-linux-gnu/libGLdispatch.so.0:/usr/lib/aarch64-linux-gnu/libgomp.so.1
-export OPENCV_VIDEOIO_PRIORITY_GSTREAMER=1000
 
 python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Open:
-- on Jetson browser: `http://127.0.0.1:8000`
-- on laptop (same network): `http://<jetson-ip>:8000`
+- Dashboard: `http://<jetson-ip>:8000`
+- Direct stream page: `http://<jetson-ip>:8889/ai_cam/`
 
-## How to SSH from laptop
-Get Jetson IP:
+## Notes
 
-```bash
-hostname -I
-```
-
-SSH from laptop:
-
-```bash
-ssh camera@<jetson-ip>
-```
-
-## Endpoints
-- `GET /` dashboard UI
-- `GET /stream.mjpg` live stream
-- `GET /api/status` metrics JSON
+- If `mediamtx` path is different, update `MEDIAMTX_DIR`/`MEDIAMTX_BIN`.
+- If CSI works in `gst-launch` but app fails, verify `python3-gi` and GStreamer plugins are installed.

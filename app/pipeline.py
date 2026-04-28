@@ -1,22 +1,20 @@
 import logging
+import subprocess
 import threading
 import time
-import subprocess
-import signal
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 import cv2
 import numpy as np
-
-# Compatibility shim for older runtime code paths that still reference np.bool.
-if not hasattr(np, "bool"):
-    np.bool = bool  # type: ignore[attr-defined]
-
 from ultralytics import YOLO
 
 from .config import Settings
 from .metrics import Metrics
+
+# Avoid FutureWarning from checking np.bool on newer NumPy.
+if "bool" not in np.__dict__:
+    np.bool = bool  # type: ignore[attr-defined]
 
 try:
     import gi
@@ -45,25 +43,29 @@ class PipelineService:
         self.settings = settings
         self.metrics = metrics
 
-        self._gst_pipeline: Optional[Any] = None
-        self._gst_sink: Optional[Any] = None
+        self._capture_pipeline: Optional[Any] = None
+        self._capture_sink: Optional[Any] = None
+
+        self._out_pipeline: Optional[Any] = None
+        self._out_appsrc: Optional[Any] = None
+        self._out_pts_ns = 0
+
+        self._mediamtx_proc: Optional[subprocess.Popen] = None
+        self._bridge_proc: Optional[subprocess.Popen] = None
+
         self._running = threading.Event()
         self._threads: List[threading.Thread] = []
 
         self._raw_lock = threading.Lock()
         self._raw_latest: Optional[FramePacket] = None
 
-        self._out_lock = threading.Lock()
-        self._out_latest_jpeg: Optional[bytes] = None
+        self._encode_lock = threading.Lock()
+        self._encode_latest: Optional[Tuple[np.ndarray, Any]] = None
 
         self._source_seq = 0
         self._last_processed_seq = -1
         self._yolo_model: Optional[Any] = None
         self._last_infer_error_ts = 0.0
-        
-        self._encode_lock = threading.Lock()
-        self._encode_latest: Optional[tuple] = None
-        self._video_writer: Optional[cv2.VideoWriter] = None
 
     def _init_ai_backend(self) -> None:
         self._yolo_model = YOLO(self.settings.yolo_model_path, task="detect")
@@ -80,16 +82,123 @@ class PipelineService:
         sink = pipeline.get_by_name("appsink0")
         if sink is None:
             pipeline.set_state(Gst.State.NULL)
-            raise RuntimeError("Could not find appsink0 in GStreamer pipeline.")
+            raise RuntimeError("Could not find appsink0 in capture pipeline.")
 
-        pipeline.set_state(Gst.State.PLAYING)
-        self._gst_pipeline = pipeline
-        self._gst_sink = sink
+        state = pipeline.set_state(Gst.State.PLAYING)
+        if state == Gst.StateChangeReturn.FAILURE:
+            pipeline.set_state(Gst.State.NULL)
+            raise RuntimeError("Could not open CSI capture GStreamer pipeline.")
+
+        self._capture_pipeline = pipeline
+        self._capture_sink = sink
+
+    def _open_output_pipeline(self) -> None:
+        if Gst is None:
+            raise RuntimeError(
+                "GStreamer Python bindings are unavailable. Install python3-gi and "
+                "gir1.2-gstreamer-1.0 on Jetson."
+            )
+
+        Gst.init(None)
+        common_src = (
+            "appsrc name=outsrc is-live=true block=false do-timestamp=true format=time ! "
+            f"video/x-raw,format=BGR,width={self.settings.stream_width},"
+            f"height={self.settings.stream_height},framerate={self.settings.fps}/1 ! "
+            "queue max-size-buffers=1 leaky=downstream ! "
+            "videoconvert ! "
+        )
+        udp_tail = (
+            "rtph264pay pt=96 config-interval=1 ! "
+            f"udpsink host={self.settings.udp_host} port={self.settings.udp_port} sync=false"
+        )
+
+        candidates = [
+            common_src
+            + "video/x-raw,format=I420 ! "
+            + f"x264enc bitrate={self.settings.stream_bitrate_kbps} speed-preset=ultrafast tune=zerolatency ! "
+            + udp_tail,
+            common_src
+            + "video/x-raw,format=BGRx ! nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! "
+            + f"nvv4l2h264enc bitrate={self.settings.stream_bitrate_kbps * 1000} "
+            + f"insert-sps-pps=1 idrinterval={self.settings.fps} iframeinterval={self.settings.fps} ! "
+            + "h264parse ! "
+            + udp_tail,
+        ]
+
+        for pipeline_str in candidates:
+            try:
+                pipeline = Gst.parse_launch(pipeline_str)
+                appsrc = pipeline.get_by_name("outsrc")
+                if appsrc is None:
+                    pipeline.set_state(Gst.State.NULL)
+                    continue
+
+                state = pipeline.set_state(Gst.State.PLAYING)
+                if state == Gst.StateChangeReturn.FAILURE:
+                    pipeline.set_state(Gst.State.NULL)
+                    continue
+
+                self._out_pipeline = pipeline
+                self._out_appsrc = appsrc
+                self._out_pts_ns = 0
+                logger.info("Opened output pipeline: %s", pipeline_str)
+                return
+            except Exception:
+                logger.warning("Failed output pipeline candidate: %s", pipeline_str)
+
+        raise RuntimeError("Could not open any H.264 output GStreamer pipeline.")
+
+    def _start_background_services(self) -> None:
+        try:
+            self._mediamtx_proc = subprocess.Popen(
+                [self.settings.mediamtx_bin],
+                cwd=self.settings.mediamtx_dir,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            time.sleep(2.0)
+            if self._mediamtx_proc.poll() is not None:
+                raise RuntimeError("MediaMTX exited during startup.")
+
+            bridge_cmd = [
+                "gst-launch-1.0",
+                "udpsrc",
+                f"port={self.settings.udp_port}",
+                "caps=application/x-rtp,media=video,clock-rate=90000,encoding-name=H264,payload=96",
+                "!",
+                "rtph264depay",
+                "!",
+                "h264parse",
+                "!",
+                "rtspclientsink",
+                (
+                    f"location=rtsp://127.0.0.1:{self.settings.mediamtx_rtsp_port}/"
+                    f"{self.settings.stream_path}"
+                ),
+                "protocols=tcp",
+            ]
+            self._bridge_proc = subprocess.Popen(
+                bridge_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as err:
+            self._stop_process(self._bridge_proc, "bridge")
+            self._bridge_proc = None
+            self._stop_process(self._mediamtx_proc, "mediamtx")
+            self._mediamtx_proc = None
+            raise RuntimeError(f"Failed to start background services: {err}") from err
 
     def start(self) -> None:
-        self._start_background_services()
-        self._init_ai_backend()
-        self._open_capture()
+        try:
+            self._start_background_services()
+            self._init_ai_backend()
+            self._open_output_pipeline()
+            self._open_capture()
+        except Exception:
+            self.stop()
+            raise
 
         self._running.set()
         self._threads = [
@@ -100,109 +209,44 @@ class PipelineService:
         for thread in self._threads:
             thread.start()
 
-    def _open_writer(self) -> None:
-        """Blindly fires RTP packets to a local UDP port to prevent Python deadlocks."""
-        out_pipeline = (
-            "appsrc do-timestamp=true is-live=true ! "
-            "video/x-raw, format=BGR ! "
-            "queue max-size-buffers=1 leaky=downstream ! "
-            "videoconvert ! "
-            "video/x-raw, format=I420 ! "
-            f"x264enc bitrate={self.settings.stream_bitrate_kbps} speed-preset=ultrafast tune=zerolatency ! "
-            "rtph264pay config-interval=1 pt=96 ! "
-            "udpsink host=127.0.0.1 port=5000 sync=false"
-        )
-        
-        self._video_writer = cv2.VideoWriter(
-            out_pipeline, 
-            cv2.CAP_GSTREAMER, 
-            0, 
-            self.settings.fps, 
-            (self.settings.stream_width, self.settings.stream_height)
-        )
-        self._video_writer = cv2.VideoWriter(
-            out_pipeline, 
-            cv2.CAP_GSTREAMER, 
-            0, 
-            self.settings.fps, 
-            (self.settings.stream_width, self.settings.stream_height)
-        )
-        
-        if not self._video_writer.isOpened():
-            logger.error("Failed to open GStreamer H.264 VideoWriter!")
-        
-        self._video_writer = cv2.VideoWriter(
-            out_pipeline, 
-            cv2.CAP_GSTREAMER, 
-            0, 
-            self.settings.fps, 
-            (self.settings.stream_width, self.settings.stream_height)
-        )
-        
-        if not self._video_writer.isOpened():
-            logger.error("Failed to open GStreamer H.264 VideoWriter!")
-        
-        if not self._video_writer.isOpened():
-            logger.error("Failed to open GStreamer H.264 VideoWriter!")
-            
-    def _start_background_services(self) -> None:
-        """Launches MediaMTX and the GStreamer Bridge automatically."""
-        try:
-            # 1. Start MediaMTX (Assumes the binary is in the path or same folder)
-            # Adjust the path to where your mediamtx binary actually is
-            self._mediamtx_proc = subprocess.Popen(
-                ["./mediamtx"], 
-                cwd="/home/camera/Downloads/mediamtx_v1.17.1_linux_arm64", # Use your actual path
-                stdout=subprocess.DEVNULL, 
-                stderr=subprocess.DEVNULL
-            )
-            logger.info("MediaMTX started in background.")
-
-            # 2. Wait a moment for MediaMTX to open its ports
-            time.sleep(2)
-
-            # 3. Start the Bridge Command
-            bridge_cmd = [
-                "gst-launch-1.0", "udpsrc", "port=5000", 
-                "caps=application/x-rtp,media=video,clock-rate=90000,encoding-name=H264", 
-                "!", "rtph264depay", "!", "h264parse", 
-                "!", "rtspclientsink", "location=rtsp://127.0.0.1:8554/ai_cam", "protocols=tcp"
-            ]
-            self._bridge_proc = subprocess.Popen(bridge_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            logger.info("GStreamer Bridge started in background.")
-
-        except Exception as e:
-            logger.error(f"Failed to start background services: {e}")
-            
     def stop(self) -> None:
         self._running.clear()
-        
-        if hasattr(self, '_bridge_proc'):
-            self._bridge_proc.terminate()
-        if hasattr(self, '_mediamtx_proc'):
-            self._mediamtx_proc.terminate()
-        
+
         for thread in self._threads:
             thread.join(timeout=1.5)
         self._threads.clear()
-        
-        if self._video_writer is not None:
-            self._video_writer.release()
-            self._video_writer = None
 
-        if self._gst_pipeline is not None and Gst is not None:
-            self._gst_pipeline.set_state(Gst.State.NULL)
-            self._gst_pipeline = None
-            self._gst_sink = None
+        if self._out_pipeline is not None and Gst is not None:
+            self._out_pipeline.set_state(Gst.State.NULL)
+            self._out_pipeline = None
+            self._out_appsrc = None
 
-    #def latest_jpeg(self) -> Optional[bytes]:
-     #   with self._out_lock:
-     #       return self._out_latest_jpeg
+        if self._capture_pipeline is not None and Gst is not None:
+            self._capture_pipeline.set_state(Gst.State.NULL)
+            self._capture_pipeline = None
+            self._capture_sink = None
+
+        self._stop_process(self._bridge_proc, "bridge")
+        self._bridge_proc = None
+        self._stop_process(self._mediamtx_proc, "mediamtx")
+        self._mediamtx_proc = None
+
+    def _stop_process(self, proc: Optional[subprocess.Popen], name: str) -> None:
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=2.0)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                logger.debug("Failed to kill %s process", name)
 
     def _capture_loop(self) -> None:
-        assert self._gst_sink is not None
+        assert self._capture_sink is not None
         while self._running.is_set():
-            sample = self._gst_sink.emit("try-pull-sample", 50_000_000)  # 50ms in nanoseconds
+            sample = self._capture_sink.emit("try-pull-sample", 50_000_000)
             if sample is None:
                 time.sleep(_CAPTURE_RETRY_SLEEP_S)
                 continue
@@ -223,57 +267,67 @@ class PipelineService:
                 continue
 
             start = time.time()
-            results = self._yolo_model.predict(packet.frame, imgsz=640, verbose=False)
-            
-            # overlay = self._run_yolo_track(packet.frame.copy())
+            try:
+                results = self._yolo_model.predict(packet.frame, imgsz=640, verbose=False)
+            except Exception as err:
+                now = time.time()
+                if now - self._last_infer_error_ts > _ERROR_LOG_INTERVAL_S:
+                    logger.warning("YOLO predict failed: %s", err)
+                    self._last_infer_error_ts = now
+                results = []
+
             inference_ms = (time.time() - start) * 1000.0
             latency_ms = (time.time() - packet.captured_at) * 1000.0
 
-            #encoded = self._encode_jpeg(overlay)
             with self._encode_lock:
-            	self._encode_latest = (packet.frame, results)
+                self._encode_latest = (packet.frame, results)
             self.metrics.set_timing(latency_ms=latency_ms, inference_ms=inference_ms)
 
-            #with self._out_lock:
-            #    self._out_latest_jpeg = encoded
-
-            #self.metrics.mark_output()
-            #self.metrics.set_timing(latency_ms=latency_ms, inference_ms=inference_ms)
-            
     def _encoder_loop(self) -> None:
-        """Runs in a 3rd thread to keep the GPU fed."""
-        self._open_writer()
-       
+        frame_duration_ns = int(1e9 / max(1, self.settings.fps))
         while self._running.is_set():
-            
-            # Grab the latest data from the AI loop safely
             with self._encode_lock:
                 if self._encode_latest is None:
                     data = None
                 else:
                     data = self._encode_latest
-                    self._encode_latest = None  # Clear it so we don't re-encode the same frame
-            
-            # If no new frame from AI, sleep briefly
+                    self._encode_latest = None
+
             if data is None:
                 time.sleep(_AI_IDLE_SLEEP_S)
                 continue
 
             frame, results = data
-            
-            # Plotting happens here, freeing up the AI thread
+
             if results and len(results) > 0:
                 overlay = results[0].plot()
             else:
                 overlay = frame
-                
-            overlay = cv2.resize(overlay, (self.settings.stream_width,self.settings.stream_height))
 
-            # Push the frame directly to the GStreamer encoder
-            if self._video_writer is not None:
-            	self._video_writer.write(overlay)
-            
+            overlay = cv2.resize(
+                overlay,
+                (self.settings.stream_width, self.settings.stream_height),
+            )
+            self._push_out_frame(overlay, frame_duration_ns)
             self.metrics.mark_output()
+
+    def _push_out_frame(self, frame: np.ndarray, frame_duration_ns: int) -> None:
+        if Gst is None or self._out_appsrc is None:
+            return
+
+        frame_c = np.ascontiguousarray(frame)
+        payload = frame_c.tobytes()
+
+        buf = Gst.Buffer.new_allocate(None, len(payload), None)
+        buf.fill(0, payload)
+        buf.pts = self._out_pts_ns
+        buf.dts = self._out_pts_ns
+        buf.duration = frame_duration_ns
+        self._out_pts_ns += frame_duration_ns
+
+        ret = self._out_appsrc.emit("push-buffer", buf)
+        if ret != Gst.FlowReturn.OK:
+            logger.warning("push-buffer returned %s", ret)
 
     def _next_frame_for_processing(self) -> Optional[FramePacket]:
         with self._raw_lock:
@@ -294,16 +348,6 @@ class PipelineService:
             if self._raw_latest is not None:
                 self.metrics.mark_drop()
             self._raw_latest = packet
-
-    #def _encode_jpeg(self, frame: np.ndarray, quality: int = 50) -> bytes:
-    #    ok, encoded = cv2.imencode(
-     #       ".jpg",
-     #       frame,
-     #       [int(cv2.IMWRITE_JPEG_QUALITY), quality],
-     #   )
-      #  if not ok:
-      #      return b""
-      #  return encoded.tobytes()
 
     def _sample_to_bgr_frame(self, sample: Any) -> Optional[np.ndarray]:
         if Gst is None:
@@ -328,29 +372,6 @@ class PipelineService:
             return None
 
         try:
-            frame = np.frombuffer(map_info.data, dtype=np.uint8).reshape((height, width, 3)).copy()
-            return frame
+            return np.frombuffer(map_info.data, dtype=np.uint8).reshape((height, width, 3)).copy()
         finally:
             buffer.unmap(map_info)
-
-    def _run_yolo_track(self, frame: np.ndarray) -> np.ndarray:
-        if self._yolo_model is None:
-            return frame
-        try:
-            results = self._yolo_model.track(frame, persist=True, verbose=False)
-            if results and len(results) > 0:
-                return results[0].plot()
-            return frame
-        except Exception as track_err:
-            # Some TensorRT engines fail in track() path; fallback to predict() for overlays.
-            try:
-                results = self._yolo_model.predict(frame, verbose=False)
-                if results and len(results) > 0:
-                    return results[0].plot()
-                return frame
-            except Exception as predict_err:
-                now = time.time()
-                if now - self._last_infer_error_ts > _ERROR_LOG_INTERVAL_S:
-                    logger.warning("YOLO inference failed. track=%s predict=%s", track_err, predict_err)
-                    self._last_infer_error_ts = now
-                return frame

@@ -1,8 +1,7 @@
-import asyncio
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
@@ -35,11 +34,14 @@ async def on_shutdown() -> None:
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
+    host = request.url.hostname or "127.0.0.1"
+    stream_url = f"http://{host}:{settings.mediamtx_webrtc_port}/{settings.stream_path}/"
     return templates.TemplateResponse(
         request,
         "index.html",
         {
             "title": "PTZ AI Camera Dashboard",
+            "stream_url": stream_url,
         },
     )
 
@@ -47,35 +49,6 @@ async def index(request: Request) -> HTMLResponse:
 @app.get("/api/status", response_class=JSONResponse)
 async def status() -> JSONResponse:
     return JSONResponse(metrics.snapshot())
-
-
-#@app.get("/stream.mjpg")
-#async def stream_mjpeg() -> StreamingResponse:
-#    async def generate():
-#        boundary = b"--frame\r\n"
-#        try:
-#            while True:
-#                frame = pipeline.latest_jpeg()
-#                if frame is None:
-#                    await asyncio.sleep(0.01)
-#                    continue#
-#
-#                yield (
-#                    boundary
-#                    + b"Content-Type: image/jpeg\r\n"
-#                    + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
-#                    + frame
-#                    + b"\r\n"
-#                )
-#                await asyncio.sleep(0.001)
-#        except asyncio.CancelledError:
-#            # Expected when client refreshes/closes the stream.
-#            return#
-#
-#    return StreamingResponse(
-#        generate(),
-#        media_type="multipart/x-mixed-replace; boundary=frame",
-#    )
 
 
 if __name__ == "__main__":
