@@ -3,7 +3,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -60,7 +60,9 @@ class PipelineService:
         self._raw_latest: Optional[FramePacket] = None
 
         self._encode_lock = threading.Lock()
-        self._encode_latest: Optional[Tuple[np.ndarray, Any]] = None
+        self._encode_latest: Optional[Tuple[np.ndarray, Any, List[Dict[str, Any]]]] = None
+        self._detections_lock = threading.Lock()
+        self._latest_detections: List[Dict[str, Any]] = []
 
         self._source_seq = 0
         self._last_processed_seq = -1
@@ -278,9 +280,12 @@ class PipelineService:
 
             inference_ms = (time.time() - start) * 1000.0
             latency_ms = (time.time() - packet.captured_at) * 1000.0
+            detections = self._extract_detections(results, packet.captured_at)
 
             with self._encode_lock:
-                self._encode_latest = (packet.frame, results)
+                self._encode_latest = (packet.frame, results, detections)
+            with self._detections_lock:
+                self._latest_detections = detections
             self.metrics.set_timing(latency_ms=latency_ms, inference_ms=inference_ms)
 
     def _encoder_loop(self) -> None:
@@ -297,13 +302,14 @@ class PipelineService:
                 time.sleep(_AI_IDLE_SLEEP_S)
                 continue
 
-            frame, results = data
-
+            frame, results, detections = data
             if results and len(results) > 0:
-                overlay = results[0].plot()
+                # Keep YOLO box styling, but suppress default labels.
+                overlay = results[0].plot(labels=False)
             else:
-                overlay = frame
+                overlay = frame.copy()
 
+            overlay = self._draw_numbered_labels(overlay, detections)
             overlay = cv2.resize(
                 overlay,
                 (self.settings.stream_width, self.settings.stream_height),
@@ -348,6 +354,92 @@ class PipelineService:
             if self._raw_latest is not None:
                 self.metrics.mark_drop()
             self._raw_latest = packet
+
+    def latest_detections(self) -> List[Dict[str, Any]]:
+        with self._detections_lock:
+            return list(self._latest_detections)
+
+    def _extract_detections(self, results: Any, captured_at: float) -> List[Dict[str, Any]]:
+        if not results or len(results) == 0:
+            return []
+
+        result = results[0]
+        boxes = getattr(result, "boxes", None)
+        if boxes is None:
+            return []
+
+        names = getattr(result, "names", {}) or {}
+        timestamp = time.strftime("%H:%M:%S", time.localtime(captured_at))
+        raw: List[Dict[str, Any]] = []
+
+        try:
+            count = len(boxes)
+        except Exception:
+            return []
+
+        for idx in range(count):
+            try:
+                cls_idx = int(boxes.cls[idx].item()) if boxes.cls is not None else -1
+                conf = float(boxes.conf[idx].item()) if boxes.conf is not None else 0.0
+                xyxy = boxes.xyxy[idx].tolist()
+                x1, y1, x2, y2 = [int(v) for v in xyxy]
+                base_label = str(names.get(cls_idx, cls_idx)).lower()
+            except Exception:
+                continue
+
+            raw.append(
+                {
+                    "class_id": cls_idx,
+                    "base_label": base_label,
+                    "confidence": conf,
+                    "x1": x1,
+                    "y1": y1,
+                    "x2": x2,
+                    "y2": y2,
+                    "timestamp": timestamp,
+                }
+            )
+
+        # Assign deterministic per-class numbers left-to-right.
+        raw.sort(key=lambda d: (d["base_label"], d["x1"], d["y1"]))
+        per_class_count: Dict[str, int] = {}
+        detections: List[Dict[str, Any]] = []
+        for item in raw:
+            base = item["base_label"]
+            per_class_count[base] = per_class_count.get(base, 0) + 1
+            ordinal = per_class_count[base]
+            label = f"{base.capitalize()} {ordinal}"
+            detections.append(
+                {
+                    "id": f"{base}-{ordinal}",
+                    "label": label,
+                    "confidence": item["confidence"],
+                    "x1": item["x1"],
+                    "y1": item["y1"],
+                    "x2": item["x2"],
+                    "y2": item["y2"],
+                    "timestamp": item["timestamp"],
+                }
+            )
+
+        detections.sort(key=lambda d: d["confidence"], reverse=True)
+        return detections
+
+    def _draw_numbered_labels(self, frame: np.ndarray, detections: List[Dict[str, Any]]) -> np.ndarray:
+        overlay = frame.copy()
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        for det in detections:
+            x1 = int(det["x1"])
+            y1 = int(det["y1"])
+            text = f'{det["label"]} {det["confidence"]:.2f}'
+
+            (tw, th), _ = cv2.getTextSize(text, font, 0.55, 2)
+            top = max(0, y1 - th - 10)
+            bottom = max(th + 10, y1)
+            cv2.rectangle(overlay, (x1, top), (x1 + tw + 10, bottom), (28, 32, 38), -1)
+            cv2.putText(overlay, text, (x1 + 5, bottom - 6), font, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+
+        return overlay
 
     def _sample_to_bgr_frame(self, sample: Any) -> Optional[np.ndarray]:
         if Gst is None:

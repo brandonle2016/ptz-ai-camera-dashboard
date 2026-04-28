@@ -13,6 +13,7 @@ Validated profile: 1280x720 at 60 FPS on Jetson (when camera and runtime support
 
 - Dashboard: `GET /`
 - Status: `GET /api/status`
+- Detections: `GET /api/detections`
 - Media stream page (via MediaMTX): `http://<jetson-ip>:8889/ai_cam/` by default
 
 ## Project Layout
@@ -87,6 +88,9 @@ python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 Open:
 - Dashboard: `http://<jetson-ip>:8000`
 - Direct stream page: `http://<jetson-ip>:8889/ai_cam/`
+
+The "Detected Objects" panel in the dashboard is now fed by `/api/detections`.
+The Track buttons are present in UI and intentionally no-op for now.
 
 ## Notes
 

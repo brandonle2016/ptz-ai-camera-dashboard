@@ -1,91 +1,266 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html class="light" lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
     <title>{{ title }}</title>
-    <link rel="stylesheet" href="/static/style.css" />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=Inter:wght@400;500;600&amp;display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap"
+      rel="stylesheet"
+    />
+    <script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "on-tertiary-container": "#4d5461",
+              "surface-container-highest": "#d9e4ea",
+              "outline": "#717c82",
+              "surface-container-high": "#e1e9ee",
+              "inverse-on-surface": "#9a9d9f",
+              "on-primary-fixed-variant": "#4e5c71",
+              "tertiary-fixed": "#dfe5f6",
+              "on-primary-container": "#455367",
+              "primary-container": "#d5e3fd",
+              "surface-container-lowest": "#ffffff",
+              "on-secondary-fixed-variant": "#4d5d73",
+              "secondary-container": "#d3e4fe",
+              "on-secondary-container": "#435368",
+              "on-primary": "#f6f7ff",
+              "surface-dim": "#cfdce3",
+              "tertiary": "#585f6d",
+              "on-tertiary": "#f8f8ff",
+              "on-tertiary-fixed": "#3a414e",
+              "on-error-container": "#752121",
+              "surface": "#f7f9fb",
+              "secondary-fixed": "#d3e4fe",
+              "outline-variant": "#a9b4b9",
+              "surface-container": "#e8eff3",
+              "primary-fixed": "#d5e3fd",
+              "inverse-primary": "#d5e3fd",
+              "primary": "#515f74",
+              "on-tertiary-fixed-variant": "#565e6b",
+              "error-dim": "#4e0309",
+              "surface-tint": "#515f74",
+              "error": "#9f403d",
+              "surface-bright": "#f7f9fb",
+              "on-background": "#2a3439",
+              "tertiary-dim": "#4c5361",
+              "tertiary-container": "#dfe5f6",
+              "error-container": "#fe8983",
+              "surface-container-low": "#f0f4f7",
+              "inverse-surface": "#0b0f10",
+              "on-secondary": "#f7f9ff",
+              "on-primary-fixed": "#324054",
+              "secondary": "#506076",
+              "on-secondary-fixed": "#314055",
+              "surface-variant": "#d9e4ea",
+              "secondary-dim": "#44546a",
+              "on-error": "#fff7f6",
+              "background": "#f7f9fb",
+              "on-surface-variant": "#566166",
+              "tertiary-fixed-dim": "#d1d7e7",
+              "primary-fixed-dim": "#c7d5ee",
+              "secondary-fixed-dim": "#c5d6f0",
+              "primary-dim": "#455368",
+              "on-surface": "#2a3439",
+            },
+            borderRadius: {
+              DEFAULT: "0.125rem",
+              lg: "0.25rem",
+              xl: "0.5rem",
+              full: "0.75rem",
+            },
+            fontFamily: {
+              headline: ["Manrope"],
+              body: ["Inter"],
+              label: ["Inter"],
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      .material-symbols-outlined {
+        font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+        vertical-align: middle;
+      }
+      body {
+        font-family: "Inter", sans-serif;
+      }
+      h1,
+      h2,
+      h3 {
+        font-family: "Manrope", sans-serif;
+      }
+      .custom-scrollbar::-webkit-scrollbar {
+        width: 4px;
+      }
+      .custom-scrollbar::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .custom-scrollbar::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 10px;
+      }
+    </style>
   </head>
-  <body>
-    <header class="topbar">
-      <div class="service-name">PTZ AI Camera Dashboard</div>
-    </header>
-
-    <main class="layout">
-      <section class="card video-card">
-        <div class="card-head">
-          <h2>Live Video</h2>
-          <span class="muted">WebRTC H.264 stream</span>
+  <body class="bg-surface text-on-surface selection:bg-primary-container selection:text-on-primary-container min-h-screen">
+    <nav class="fixed top-0 w-full z-50 bg-slate-50/80 backdrop-blur-xl shadow-sm flex justify-between items-center px-8 h-16 border-b border-slate-200/50">
+      <div class="flex items-center gap-8">
+        <span class="text-xl font-bold tracking-tighter text-slate-900">GA8ED</span>
+        <div class="hidden md:flex items-center space-x-6 tracking-tight font-semibold">
+          <a class="text-slate-900 border-b-2 border-slate-700 pb-1" href="#">Live View</a>
         </div>
-        <iframe
-          id="ai-video-feed"
-          src="{{ stream_url }}"
-          style="width: 100%; aspect-ratio: 16 / 9"
-          width="1280"
-          height="720"
-          scrolling="no"
-          frameborder="0"
-        ></iframe>
-      </section>
+      </div>
+      <div class="flex items-center gap-4"></div>
+    </nav>
 
-      <aside class="card metrics-card">
-        <div class="card-head">
-          <h2>System Status</h2>
-        </div>
+    <main class="max-w-[1440px] mx-auto pt-24 px-8 pb-12 min-h-screen">
+      <header class="mb-8">
+        <h1 class="text-3xl font-extrabold tracking-tighter text-on-surface">PTZ AI Camera Dashboard</h1>
+        <p class="text-on-surface-variant mt-1">Real-time object detection and spatial analysis</p>
+      </header>
 
-        <section class="metrics-grid">
-          <article class="metric-box">
-            <span class="label">Capture FPS</span>
-            <strong id="captureFps">--</strong>
-          </article>
-          <article class="metric-box">
-            <span class="label">Stream FPS</span>
-            <strong id="streamFps">--</strong>
-          </article>
-          <article class="metric-box">
-            <span class="label">Latency</span>
-            <strong id="latency">--</strong>
-          </article>
-          <article class="metric-box">
-            <span class="label">Inference</span>
-            <strong id="inference">--</strong>
-          </article>
-          <article class="metric-box">
-            <span class="label">Dropped Frames</span>
-            <strong id="drops">--</strong>
-          </article>
-          <article class="metric-box">
-            <span class="label">Temp</span>
-            <strong id="temp">--</strong>
-          </article>
+      <div class="grid grid-cols-12 gap-8">
+        <section class="col-span-12 lg:col-span-8 space-y-4">
+          <div class="relative group aspect-video bg-inverse-surface rounded-xl overflow-hidden shadow-lg border border-outline-variant/10">
+            <iframe
+              id="liveStream"
+              src="{{ stream_url }}"
+              title="Live Stream"
+              class="w-full h-full object-cover opacity-95"
+              scrolling="no"
+              frameborder="0"
+              allowfullscreen
+            ></iframe>
+          </div>
         </section>
-      </aside>
+
+        <section class="col-span-12 lg:col-span-4 bg-surface-container-low rounded-xl p-6 flex flex-col h-full min-h-[400px]">
+          <div class="flex items-center justify-between mb-6">
+            <h2 class="text-lg font-bold tracking-tight text-on-surface flex items-center gap-2">
+              <span class="material-symbols-outlined text-primary">search_check</span>
+              Detected Objects
+            </h2>
+          </div>
+          <div id="detectedObjectsList" class="space-y-3 overflow-y-auto flex-grow custom-scrollbar">
+            <div class="bg-surface-container-lowest p-4 rounded-lg text-sm text-on-surface-variant">
+              Waiting for detections...
+            </div>
+          </div>
+        </section>
+
+        <section class="col-span-12 mt-4">
+          <h2 class="text-sm font-bold tracking-widest uppercase text-on-surface-variant mb-4 ml-1">System Metrics</h2>
+          <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+            <div class="bg-surface-container-low p-5 rounded-xl border border-transparent hover:border-outline-variant/20 transition-all">
+              <div class="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider mb-2">Capture FPS</div>
+              <div class="flex items-end gap-1"><span class="text-2xl font-extrabold text-on-surface tracking-tighter" id="captureFps">--</span><span class="text-xs text-on-surface-variant mb-1 font-medium">fps</span></div>
+            </div>
+            <div class="bg-surface-container-low p-5 rounded-xl border border-transparent hover:border-outline-variant/20 transition-all">
+              <div class="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider mb-2">Stream FPS</div>
+              <div class="flex items-end gap-1"><span class="text-2xl font-extrabold text-on-surface tracking-tighter" id="streamFps">--</span><span class="text-xs text-on-surface-variant mb-1 font-medium">fps</span></div>
+            </div>
+            <div class="bg-surface-container-low p-5 rounded-xl border border-transparent hover:border-outline-variant/20 transition-all">
+              <div class="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider mb-2">Latency</div>
+              <div class="flex items-end gap-1"><span class="text-2xl font-extrabold text-on-surface tracking-tighter" id="latency">--</span><span class="text-xs text-on-surface-variant mb-1 font-medium">ms</span></div>
+            </div>
+            <div class="bg-surface-container-low p-5 rounded-xl border border-transparent hover:border-outline-variant/20 transition-all">
+              <div class="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider mb-2">Inference</div>
+              <div class="flex items-end gap-1"><span class="text-2xl font-extrabold text-on-surface tracking-tighter" id="inference">--</span><span class="text-xs text-on-surface-variant mb-1 font-medium">ms</span></div>
+            </div>
+            <div class="bg-surface-container-low p-5 rounded-xl border border-transparent hover:border-outline-variant/20 transition-all">
+              <div class="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider mb-2">Dropped</div>
+              <div class="flex items-end gap-1"><span class="text-2xl font-extrabold text-on-surface tracking-tighter" id="drops">--</span><span class="text-xs text-on-surface-variant mb-1 font-medium">frames</span></div>
+            </div>
+            <div class="bg-surface-container-low p-5 rounded-xl border border-transparent hover:border-outline-variant/20 transition-all">
+              <div class="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider mb-2">Temperature</div>
+              <div class="flex items-end gap-1"><span class="text-2xl font-extrabold text-on-surface tracking-tighter" id="temp">--</span><span class="text-xs text-on-surface-variant mb-1 font-medium">C</span></div>
+            </div>
+          </div>
+        </section>
+      </div>
     </main>
 
     <script>
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
+      function renderDetections(objects) {
+        const list = document.getElementById("detectedObjectsList");
+        if (!Array.isArray(objects) || objects.length === 0) {
+          list.innerHTML = '<div class="bg-surface-container-lowest p-4 rounded-lg text-sm text-on-surface-variant">No detections in current frame.</div>';
+          return;
+        }
+
+        list.innerHTML = objects
+          .map((obj) => {
+            const label = escapeHtml(obj.label ?? "UNKNOWN");
+            const confidencePct = Math.round((obj.confidence ?? 0) * 100);
+            return `
+              <div class="bg-surface-container-lowest p-4 rounded-lg flex items-center justify-between group hover:bg-surface-bright transition-colors duration-200">
+                <div class="flex items-center gap-4">
+                  <div>
+                    <div class="text-sm font-bold text-on-surface">${label}</div>
+                    <div class="text-[10px] text-on-surface-variant font-medium">Confidence: ${confidencePct}%</div>
+                  </div>
+                </div>
+                <button type="button" class="px-3 py-1.5 bg-surface-container-highest text-on-surface text-xs font-bold rounded-md tracking-tight hover:bg-primary hover:text-on-primary transition-all">Track</button>
+              </div>
+            `;
+          })
+          .join("");
+      }
+
       async function refreshStatus() {
         try {
-          const res = await fetch('/api/status');
+          const res = await fetch("/api/status");
           const data = await res.json();
-
-          document.getElementById('captureFps').textContent = `${data.capture_fps.toFixed(1)} fps`;
-          document.getElementById('streamFps').textContent = `${data.stream_fps.toFixed(1)} fps`;
-          document.getElementById('latency').textContent = `${data.latency_ms.toFixed(1)} ms`;
-          document.getElementById('inference').textContent = `${data.inference_ms.toFixed(1)} ms`;
-          document.getElementById('drops').textContent = `${data.dropped_frames}`;
-          document.getElementById('temp').textContent = data.temp_c == null ? 'n/a' : `${data.temp_c.toFixed(1)} C`;
+          document.getElementById("captureFps").textContent = `${data.capture_fps.toFixed(1)}`;
+          document.getElementById("streamFps").textContent = `${data.stream_fps.toFixed(1)}`;
+          document.getElementById("latency").textContent = `${data.latency_ms.toFixed(1)}`;
+          document.getElementById("inference").textContent = `${data.inference_ms.toFixed(1)}`;
+          document.getElementById("drops").textContent = `${data.dropped_frames}`;
+          document.getElementById("temp").textContent = data.temp_c == null ? "n/a" : `${data.temp_c.toFixed(1)}°`;
         } catch {
-          document.getElementById('captureFps').textContent = '--';
-          document.getElementById('streamFps').textContent = '--';
-          document.getElementById('latency').textContent = '--';
-          document.getElementById('inference').textContent = '--';
-          document.getElementById('drops').textContent = '--';
-          document.getElementById('temp').textContent = '--';
+          document.getElementById("captureFps").textContent = "--";
+          document.getElementById("streamFps").textContent = "--";
+          document.getElementById("latency").textContent = "--";
+          document.getElementById("inference").textContent = "--";
+          document.getElementById("drops").textContent = "--";
+          document.getElementById("temp").textContent = "--";
         }
       }
 
-      refreshStatus();
-      setInterval(refreshStatus, 1000);
+      async function refreshDetections() {
+        try {
+          const res = await fetch("/api/detections");
+          const data = await res.json();
+          renderDetections(data.objects || []);
+        } catch {
+          renderDetections([]);
+        }
+      }
+
+      async function refreshAll() {
+        await Promise.all([refreshStatus(), refreshDetections()]);
+      }
+
+      refreshAll();
+      setInterval(refreshAll, 1000);
     </script>
   </body>
 </html>

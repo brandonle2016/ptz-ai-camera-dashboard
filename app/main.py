@@ -51,5 +51,10 @@ async def status() -> JSONResponse:
     return JSONResponse(metrics.snapshot())
 
 
+@app.get("/api/detections", response_class=JSONResponse)
+async def detections() -> JSONResponse:
+    return JSONResponse({"objects": pipeline.latest_detections()})
+
+
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host=settings.host, port=settings.port, reload=False)
