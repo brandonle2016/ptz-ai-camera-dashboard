@@ -105,6 +105,10 @@ SSH from laptop:
 ssh camera@<jetson-ip>
 ```
 
+Secure copy (copies file from laptop to Jetson):
+
+scp /path/to/local/file.py camera@ip:/path/to/destination/file.py
+
 ## Notes
 
 - If `mediamtx` path is different, update `MEDIAMTX_DIR`/`MEDIAMTX_BIN`.
