@@ -19,6 +19,8 @@ class MotorController:
         """ Initialize Motor Controller. """
         self.frame_h = frame_h
         self.frame_w = frame_w
+        self.base_w = 1280.0
+        self.base_h = 720.0
 
         # calc center of the screen once and store it for later use
         self.screen_center_x = frame_w / 2.0
@@ -33,21 +35,33 @@ class MotorController:
 
         # set starting angles for the motors to be in the middle position (90 degrees)
         self.current_pan = 90 
-        self.current_tilt = 90 
+        self.current_tilt = 25 
 
         # tuning variables
-        self.threshold = 30     # minimum pixel difference to trigger motor movement
-        self.kp_pan = 0.03      # proportional gain for pan motor
-        self.kp_tilt = 0.03     # proportional gain for tilt motor
+        # Scale tuning from known-good 1280x720 behavior to current resolution.
+        self.threshold_x = 45.0 * (self.frame_w / self.base_w)
+        self.threshold_y = 45.0 * (self.frame_h / self.base_h)
+        self.kp_pan = 0.015 * (self.base_w / self.frame_w)
+        self.kp_tilt = 0.015 * (self.base_h / self.frame_h)
+        self.max_step_deg = 1.2
+        self.min_step_deg = 0.15
+
+        self.kit = None
+        self.hardware_enabled = False
 
         # initialize hardware if available
         if HARDWARE_AVAILABLE:
-            self.kit = ServoKit(channels=16)
-
-            self.kit.servo[0].angle = self.current_pan
-            self.kit.servo[1].angle = self.current_tilt
-
-            logger.info("Adafruit ServoKit initialized.")
+            try:
+                self.kit = ServoKit(channels=16)
+                self.kit.servo[0].angle = self.current_pan
+                self.kit.servo[1].angle = self.current_tilt
+                self.hardware_enabled = True
+                logger.info("Adafruit ServoKit initialized.")
+            except Exception as err:
+                logger.warning(
+                    "Servo hardware init failed (%s). Falling back to simulation mode.",
+                    err,
+                )
         else:
             logger.warning("Hardware not available. MotorController will run in simulation mode.")
 
@@ -99,10 +113,10 @@ class MotorController:
                 diff_y = obj_y - self.screen_center_y
                 
                 # Check deadzones and move
-                if abs(diff_x) > self.threshold:
+                if abs(diff_x) > self.threshold_x:
                     self._pan_motor_adj(diff_x)
                     
-                if abs(diff_y) > self.threshold:
+                if abs(diff_y) > self.threshold_y:
                     self._tilt_motor_adj(diff_y)
                     
             except queue.Empty:
@@ -113,6 +127,9 @@ class MotorController:
         """Translates pixel error into a smooth Pan movement."""
         # Calculate angle step
         angle_step = diff_x * self.kp_pan
+        angle_step = max(-self.max_step_deg, min(self.max_step_deg, angle_step))
+        if abs(angle_step) < self.min_step_deg:
+            return
         
         # update current angle (Change to += if motor turns the wrong way)
         self.current_pan -= angle_step 
@@ -120,7 +137,7 @@ class MotorController:
         # Clamp between physical servo limits (0 to 180 degrees)
         self.current_pan = max(0.0, min(180.0, self.current_pan))
         
-        if HARDWARE_AVAILABLE:
+        if self.hardware_enabled and self.kit is not None:
             try:
                 self.kit.servo[0].angle = self.current_pan 
             except OSError: # OSError usually means a hardware disconnection
@@ -131,13 +148,16 @@ class MotorController:
     def _tilt_motor_adj(self, diff_y: float) -> None:
         """Translates pixel error into a smooth Tilt movement."""
         angle_step = diff_y * self.kp_tilt
+        angle_step = max(-self.max_step_deg, min(self.max_step_deg, angle_step))
+        if abs(angle_step) < self.min_step_deg:
+            return
         
-        # update current angle (Change to -= if motor turns the wrong way)
-        self.current_tilt += angle_step 
+        # Invert tilt update so positive screen error moves camera downward.
+        self.current_tilt -= angle_step 
         
         self.current_tilt = max(0.0, min(180.0, self.current_tilt))
         
-        if HARDWARE_AVAILABLE:
+        if self.hardware_enabled and self.kit is not None:
             try:
                 self.kit.servo[1].angle = self.current_tilt
             except OSError: # hardware disconnection
@@ -150,7 +170,7 @@ class MotorController:
         self.current_pan = 90.0
         self.current_tilt = 90.0
         
-        if HARDWARE_AVAILABLE:
+        if self.hardware_enabled and self.kit is not None:
             try:
                 self.kit.servo[0].angle = self.current_pan
                 self.kit.servo[1].angle = self.current_tilt
@@ -173,7 +193,7 @@ class MotorController:
         self.current_pan = max(0.0, min(180.0, self.current_pan))
         self.current_tilt = max(0.0, min(180.0, self.current_tilt))
         
-        if HARDWARE_AVAILABLE:
+        if self.hardware_enabled and self.kit is not None:
             try:
                 self.kit.servo[0].angle = self.current_pan
                 self.kit.servo[1].angle = self.current_tilt

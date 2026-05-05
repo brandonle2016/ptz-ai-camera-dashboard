@@ -11,6 +11,7 @@ from ultralytics import YOLO
 
 from .config import Settings
 from .metrics import Metrics
+from .motor_controller import MotorController
 
 # Avoid FutureWarning from checking np.bool on newer NumPy.
 if "bool" not in np.__dict__:
@@ -63,11 +64,16 @@ class PipelineService:
         self._encode_latest: Optional[Tuple[np.ndarray, Any, List[Dict[str, Any]]]] = None
         self._detections_lock = threading.Lock()
         self._latest_detections: List[Dict[str, Any]] = []
+        self._tracking_lock = threading.Lock()
+        self._tracked_detection_id: Optional[str] = None
+        self._tracked_label_base: Optional[str] = None
+        self._tracked_center: Optional[Tuple[float, float]] = None
 
         self._source_seq = 0
         self._last_processed_seq = -1
         self._yolo_model: Optional[Any] = None
         self._last_infer_error_ts = 0.0
+        self._motor_controller = MotorController(frame_h=settings.height, frame_w=settings.width)
 
     def _init_ai_backend(self) -> None:
         self._yolo_model = YOLO(self.settings.yolo_model_path, task="detect")
@@ -198,6 +204,7 @@ class PipelineService:
             self._init_ai_backend()
             self._open_output_pipeline()
             self._open_capture()
+            self._motor_controller.start()
         except Exception:
             self.stop()
             raise
@@ -232,6 +239,7 @@ class PipelineService:
         self._bridge_proc = None
         self._stop_process(self._mediamtx_proc, "mediamtx")
         self._mediamtx_proc = None
+        self._motor_controller.stop()
 
     def _stop_process(self, proc: Optional[subprocess.Popen], name: str) -> None:
         if proc is None:
@@ -270,7 +278,12 @@ class PipelineService:
 
             start = time.time()
             try:
-                results = self._yolo_model.predict(packet.frame, imgsz=640, verbose=False)
+                results = self._yolo_model.predict(
+                    packet.frame,
+                    imgsz=self.settings.yolo_imgsz,
+                    conf=self.settings.yolo_confidence,
+                    verbose=False,
+                )
             except Exception as err:
                 now = time.time()
                 if now - self._last_infer_error_ts > _ERROR_LOG_INTERVAL_S:
@@ -281,6 +294,20 @@ class PipelineService:
             inference_ms = (time.time() - start) * 1000.0
             latency_ms = (time.time() - packet.captured_at) * 1000.0
             detections = self._extract_detections(results, packet.captured_at)
+
+            tracked_detection = self._resolve_tracking_detection(detections)
+            if tracked_detection is not None:
+                with self._tracking_lock:
+                    tracked_center = self._tracked_center
+                if tracked_center is None:
+                    obj_x = (tracked_detection["x1"] + tracked_detection["x2"]) / 2.0
+                    obj_y = (tracked_detection["y1"] + tracked_detection["y2"]) / 2.0
+                else:
+                    obj_x, obj_y = tracked_center
+                self._motor_controller.update_target(obj_x=obj_x, obj_y=obj_y)
+            selected_id = tracked_detection["id"] if tracked_detection is not None else None
+            for det in detections:
+                det["selected"] = det["id"] == selected_id
 
             with self._encode_lock:
                 self._encode_latest = (packet.frame, results, detections)
@@ -303,13 +330,25 @@ class PipelineService:
                 continue
 
             frame, results, detections = data
-            if results and len(results) > 0:
-                # Keep YOLO box styling, but suppress default labels.
-                overlay = results[0].plot(labels=False)
+            with self._tracking_lock:
+                tracking_active = self._tracked_detection_id is not None
+            tracked_only = [d for d in detections if d.get("selected")]
+            if tracking_active:
+                if tracked_only:
+                    # While actively tracking, only draw the tracked target.
+                    overlay = self._draw_boxes(frame.copy(), tracked_only)
+                else:
+                    # Tracking requested but current frame has no target match:
+                    # draw no detection boxes instead of falling back to all boxes.
+                    overlay = frame.copy()
             else:
-                overlay = frame.copy()
+                if results and len(results) > 0:
+                    # Keep YOLO box styling, but suppress default labels.
+                    overlay = results[0].plot(labels=False)
+                else:
+                    overlay = frame.copy()
+                overlay = self._draw_numbered_labels(overlay, detections)
 
-            overlay = self._draw_numbered_labels(overlay, detections)
             overlay = cv2.resize(
                 overlay,
                 (self.settings.stream_width, self.settings.stream_height),
@@ -351,13 +390,110 @@ class PipelineService:
         self._source_seq += 1
 
         with self._raw_lock:
-            if self._raw_latest is not None:
-                self.metrics.mark_drop()
             self._raw_latest = packet
 
     def latest_detections(self) -> List[Dict[str, Any]]:
         with self._detections_lock:
-            return list(self._latest_detections)
+            detections = list(self._latest_detections)
+        with self._tracking_lock:
+            tracking_active = self._tracked_detection_id is not None
+        if not tracking_active:
+            return detections
+        return [d for d in detections if d.get("selected")]
+
+    def select_tracking_target(self, detection_id: str) -> bool:
+        with self._detections_lock:
+            selected = next((d for d in self._latest_detections if d.get("id") == detection_id), None)
+        if selected is None:
+            return False
+        center = (
+            (float(selected["x1"]) + float(selected["x2"])) / 2.0,
+            (float(selected["y1"]) + float(selected["y2"])) / 2.0,
+        )
+        with self._tracking_lock:
+            self._tracked_detection_id = detection_id
+            self._tracked_label_base = str(selected.get("base_label", "")).lower() or None
+            self._tracked_center = center
+        return True
+
+    def clear_tracking_target(self) -> None:
+        with self._tracking_lock:
+            self._tracked_detection_id = None
+            self._tracked_label_base = None
+            self._tracked_center = None
+
+    def tracking_state(self) -> Dict[str, Any]:
+        with self._tracking_lock:
+            target_id = self._tracked_detection_id
+        return {"active": target_id is not None, "target_id": target_id}
+
+    def _resolve_tracking_detection(self, detections: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        with self._tracking_lock:
+            target_id = self._tracked_detection_id
+            target_base = self._tracked_label_base
+            last_center = self._tracked_center
+
+        if target_id is None and target_base is None:
+            return None
+        if not detections:
+            return None
+
+        exact = next((d for d in detections if d["id"] == target_id), None) if target_id else None
+        if exact is not None:
+            chosen = exact
+        else:
+            candidates = (
+                [d for d in detections if str(d.get("base_label", "")).lower() == target_base]
+                if target_base
+                else list(detections)
+            )
+            if not candidates:
+                return None
+
+            if last_center is None:
+                chosen = max(candidates, key=lambda d: d.get("confidence", 0.0))
+            else:
+                lx, ly = last_center
+                chosen = min(
+                    candidates,
+                    key=lambda d: (
+                        (((d["x1"] + d["x2"]) / 2.0) - lx) ** 2 + (((d["y1"] + d["y2"]) / 2.0) - ly) ** 2
+                    ),
+                )
+
+        cx = (float(chosen["x1"]) + float(chosen["x2"])) / 2.0
+        cy = (float(chosen["y1"]) + float(chosen["y2"])) / 2.0
+        if last_center is None:
+            next_center = (cx, cy)
+        else:
+            alpha = 0.7
+            next_center = (alpha * last_center[0] + (1.0 - alpha) * cx, alpha * last_center[1] + (1.0 - alpha) * cy)
+
+        with self._tracking_lock:
+            self._tracked_detection_id = chosen["id"]
+            self._tracked_label_base = str(chosen.get("base_label", "")).lower() or target_base
+            self._tracked_center = next_center
+
+        return chosen
+
+    def manual_control(self, direction: str, step_deg: float = 4.0) -> bool:
+        d = direction.strip().lower()
+        if d not in {"up", "down", "left", "right"}:
+            return False
+
+        pan_step = 0.0
+        tilt_step = 0.0
+        if d == "left":
+            pan_step = abs(step_deg)
+        elif d == "right":
+            pan_step = -abs(step_deg)
+        elif d == "up":
+            tilt_step = abs(step_deg)
+        elif d == "down":
+            tilt_step = -abs(step_deg)
+
+        self._motor_controller.manual_move(pan_step=pan_step, tilt_step=tilt_step)
+        return True
 
     def _extract_detections(self, results: Any, captured_at: float) -> List[Dict[str, Any]]:
         if not results or len(results) == 0:
@@ -381,6 +517,8 @@ class PipelineService:
             try:
                 cls_idx = int(boxes.cls[idx].item()) if boxes.cls is not None else -1
                 conf = float(boxes.conf[idx].item()) if boxes.conf is not None else 0.0
+                if conf < self.settings.yolo_confidence:
+                    continue
                 xyxy = boxes.xyxy[idx].tolist()
                 x1, y1, x2, y2 = [int(v) for v in xyxy]
                 base_label = str(names.get(cls_idx, cls_idx)).lower()
@@ -404,21 +542,26 @@ class PipelineService:
         raw.sort(key=lambda d: (d["base_label"], d["x1"], d["y1"]))
         per_class_count: Dict[str, int] = {}
         detections: List[Dict[str, Any]] = []
+        with self._tracking_lock:
+            tracked_id = self._tracked_detection_id
         for item in raw:
             base = item["base_label"]
             per_class_count[base] = per_class_count.get(base, 0) + 1
             ordinal = per_class_count[base]
             label = f"{base.capitalize()} {ordinal}"
+            det_id = f"{base}-{ordinal}"
             detections.append(
                 {
-                    "id": f"{base}-{ordinal}",
+                    "id": det_id,
                     "label": label,
+                    "base_label": base,
                     "confidence": item["confidence"],
                     "x1": item["x1"],
                     "y1": item["y1"],
                     "x2": item["x2"],
                     "y2": item["y2"],
                     "timestamp": item["timestamp"],
+                    "selected": det_id == tracked_id,
                 }
             )
 
@@ -439,6 +582,33 @@ class PipelineService:
             cv2.rectangle(overlay, (x1, top), (x1 + tw + 10, bottom), (28, 32, 38), -1)
             cv2.putText(overlay, text, (x1 + 5, bottom - 6), font, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
 
+        return overlay
+
+    def _draw_boxes(self, frame: np.ndarray, detections: List[Dict[str, Any]]) -> np.ndarray:
+        overlay = frame.copy()
+        for det in detections:
+            x1 = int(det["x1"])
+            y1 = int(det["y1"])
+            x2 = int(det["x2"])
+            y2 = int(det["y2"])
+
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), (56, 255, 56), 2)
+
+            text = f'{det["label"]} {det["confidence"]:.2f}'
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+            top = max(0, y1 - th - 10)
+            bottom = max(th + 10, y1)
+            cv2.rectangle(overlay, (x1, top), (x1 + tw + 10, bottom), (28, 32, 38), -1)
+            cv2.putText(
+                overlay,
+                text,
+                (x1 + 5, bottom - 6),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
         return overlay
 
     def _sample_to_bgr_frame(self, sample: Any) -> Optional[np.ndarray]:

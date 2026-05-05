@@ -14,6 +14,10 @@ Validated profile: 1280x720 at 60 FPS on Jetson (when camera and runtime support
 - Dashboard: `GET /`
 - Status: `GET /api/status`
 - Detections: `GET /api/detections`
+- Track one detection: `POST /api/track` body `{"id":"person-1"}`
+- Untrack all: `POST /api/untrack-all`
+- Track state: `GET /api/track`
+- Manual move: `POST /api/control/manual` body `{"direction":"up|down|left|right","step":4.0}`
 - Media stream page (via MediaMTX): `http://<jetson-ip>:8889/ai_cam/` by default
 
 ## Project Layout
@@ -89,8 +93,10 @@ Open:
 - Dashboard: `http://<jetson-ip>:8000`
 - Direct stream page: `http://<jetson-ip>:8889/ai_cam/`
 
-The "Detected Objects" panel in the dashboard is now fed by `/api/detections`.
-The Track buttons are present in UI and intentionally no-op for now.
+The "Detected Objects" panel is fed by `/api/detections`.
+Track buttons select one object for auto-tracking.
+"Untrack All" clears the selected target.
+Arrow controls send manual pan/tilt commands.
 
 ## How to SSH from laptop
 Get Jetson IP:

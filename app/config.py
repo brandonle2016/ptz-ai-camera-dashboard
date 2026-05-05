@@ -32,6 +32,8 @@ class Settings:
     stream_path: str = os.getenv("STREAM_PATH", "ai_cam")
     
     yolo_model_path: str = os.getenv("YOLO_MODEL_PATH", "yolo26n.engine")
+    yolo_imgsz: int = int(os.getenv("YOLO_IMGSZ", "320"))
+    yolo_confidence: float = float(os.getenv("YOLO_CONFIDENCE", "0.65"))
     sensor_id: int = int(os.getenv("CSI_SENSOR_ID", "0"))
     flip_method: int = int(os.getenv("CSI_FLIP_METHOD", "2"))
     @property

@@ -14,7 +14,6 @@ class Metrics:
     _output_ts: Deque[float] = field(default_factory=lambda: deque(maxlen=120), init=False)
     _latency_ms: float = 0.0
     _inference_ms: float = 0.0
-    _dropped_frames: int = 0
 
     def mark_capture(self) -> None:
         with self._lock:
@@ -28,10 +27,6 @@ class Metrics:
         with self._lock:
             self._latency_ms = latency_ms
             self._inference_ms = inference_ms
-
-    def mark_drop(self) -> None:
-        with self._lock:
-            self._dropped_frames += 1
 
     def _fps(self, timestamps: Deque[float]) -> float:
         if len(timestamps) < 2:
@@ -67,7 +62,6 @@ class Metrics:
                 "stream_fps": round(self._fps(self._output_ts), 2),
                 "latency_ms": round(self._latency_ms, 2),
                 "inference_ms": round(self._inference_ms, 2),
-                "dropped_frames": self._dropped_frames,
             }
         data["temp_c"] = self._read_temp_c()
         return data
