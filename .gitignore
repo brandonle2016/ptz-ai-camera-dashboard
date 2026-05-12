@@ -1,6 +1,5 @@
 .venv/
-.venv2/
-.venv3/
+.venv*
 __pycache__/
 *.pyc
 *.engine
