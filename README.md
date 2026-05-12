@@ -53,13 +53,13 @@ python3 -m pip install -r requirements.txt
 export APP_HOST=0.0.0.0
 export APP_PORT=8000
 
-export FRAME_WIDTH=1280
-export FRAME_HEIGHT=720
+export FRAME_WIDTH=2560
+export FRAME_HEIGHT=1440
 export FRAME_FPS=30
 
-export STREAM_WIDTH=1280
-export STREAM_HEIGHT=720
-export STREAM_BITRATE=2500
+export STREAM_WIDTH=2560
+export STREAM_HEIGHT=1440
+export STREAM_BITRATE=10000
 
 export CSI_SENSOR_ID=0
 export CSI_FLIP_METHOD=2
