@@ -53,18 +53,20 @@ python3 -m pip install -r requirements.txt
 export APP_HOST=0.0.0.0
 export APP_PORT=8000
 
-export FRAME_WIDTH=2560
-export FRAME_HEIGHT=1440
+export FRAME_WIDTH=1280
+export FRAME_HEIGHT=720
 export FRAME_FPS=30
 
-export STREAM_WIDTH=2560
-export STREAM_HEIGHT=1440
-export STREAM_BITRATE=10000
+export STREAM_WIDTH=1280
+export STREAM_HEIGHT=720
+export STREAM_BITRATE=2500
 
 export CSI_SENSOR_ID=0
 export CSI_FLIP_METHOD=2
 
 export YOLO_MODEL_PATH="/home/camera/Desktop/share/yolo26n.engine"
+export YOLO_IMGSZ=640
+export YOLO_CONFIDENCE=0.40
 
 export MEDIAMTX_DIR="/home/camera/Downloads/mediamtx_v1.17.1_linux_arm64"
 export MEDIAMTX_BIN="./mediamtx"
