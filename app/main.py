@@ -45,7 +45,7 @@ async def on_shutdown() -> None:
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     host = request.url.hostname or "127.0.0.1"
-    stream_url = f"http://{host}:{settings.mediamtx_webrtc_port}/{settings.stream_path}/"
+    stream_url = f"https://open-source-ai-camera.ga8ed.com/video/ai_cam/"
     return templates.TemplateResponse(
         request,
         "index.html",

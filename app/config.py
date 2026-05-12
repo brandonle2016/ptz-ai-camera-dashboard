@@ -8,14 +8,14 @@ class Settings:
     port: int = int(os.getenv("APP_PORT", "8000"))
     
     # Camera & AI Resolution (Keep this high)
-    width: int = int(os.getenv("FRAME_WIDTH", "1280"))
-    height: int = int(os.getenv("FRAME_HEIGHT", "720"))
-    fps: int = int(os.getenv("FRAME_FPS", "60"))
+    width: int = int(os.getenv("FRAME_WIDTH", "2560"))
+    height: int = int(os.getenv("FRAME_HEIGHT", "1440"))
+    fps: int = int(os.getenv("FRAME_FPS", "30"))
     
     # Stream output resolution.
-    stream_width: int = int(os.getenv("STREAM_WIDTH", "1280"))
-    stream_height: int = int(os.getenv("STREAM_HEIGHT", "720"))
-    stream_bitrate_kbps: int = int(os.getenv("STREAM_BITRATE", "2500"))
+    stream_width: int = int(os.getenv("STREAM_WIDTH", "2560"))
+    stream_height: int = int(os.getenv("STREAM_HEIGHT", "1440"))
+    stream_bitrate_kbps: int = int(os.getenv("STREAM_BITRATE", "10000"))
     
     # RTP output destination for encoded H.264.
     udp_host: str = os.getenv("UDP_HOST", "127.0.0.1")
@@ -32,8 +32,8 @@ class Settings:
     stream_path: str = os.getenv("STREAM_PATH", "ai_cam")
     
     yolo_model_path: str = os.getenv("YOLO_MODEL_PATH", "yolo26n.engine")
-    yolo_imgsz: int = int(os.getenv("YOLO_IMGSZ", "320"))
-    yolo_confidence: float = float(os.getenv("YOLO_CONFIDENCE", "0.65"))
+    yolo_imgsz: int = int(os.getenv("YOLO_IMGSZ", "640"))
+    yolo_confidence: float = float(os.getenv("YOLO_CONFIDENCE", "0.40"))
     sensor_id: int = int(os.getenv("CSI_SENSOR_ID", "0"))
     flip_method: int = int(os.getenv("CSI_FLIP_METHOD", "2"))
     @property

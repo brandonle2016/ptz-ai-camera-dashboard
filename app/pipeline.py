@@ -66,7 +66,6 @@ class PipelineService:
         self._latest_detections: List[Dict[str, Any]] = []
         self._tracking_lock = threading.Lock()
         self._tracked_detection_id: Optional[str] = None
-        self._tracked_label_base: Optional[str] = None
         self._tracked_center: Optional[Tuple[float, float]] = None
 
         self._source_seq = 0
@@ -278,18 +277,28 @@ class PipelineService:
 
             start = time.time()
             try:
-                results = self._yolo_model.predict(
+                results = self._yolo_model.track(
                     packet.frame,
                     imgsz=self.settings.yolo_imgsz,
                     conf=self.settings.yolo_confidence,
+                    persist=True,
                     verbose=False,
                 )
-            except Exception as err:
-                now = time.time()
-                if now - self._last_infer_error_ts > _ERROR_LOG_INTERVAL_S:
-                    logger.warning("YOLO predict failed: %s", err)
-                    self._last_infer_error_ts = now
-                results = []
+            except Exception as track_err:
+                # Keep a robust fallback for runtimes that fail in track mode.
+                try:
+                    results = self._yolo_model.predict(
+                        packet.frame,
+                        imgsz=self.settings.yolo_imgsz,
+                        conf=self.settings.yolo_confidence,
+                        verbose=False,
+                    )
+                except Exception as predict_err:
+                    now = time.time()
+                    if now - self._last_infer_error_ts > _ERROR_LOG_INTERVAL_S:
+                        logger.warning("YOLO inference failed. track=%s predict=%s", track_err, predict_err)
+                        self._last_infer_error_ts = now
+                    results = []
 
             inference_ms = (time.time() - start) * 1000.0
             latency_ms = (time.time() - packet.captured_at) * 1000.0
@@ -332,15 +341,9 @@ class PipelineService:
             frame, results, detections = data
             with self._tracking_lock:
                 tracking_active = self._tracked_detection_id is not None
-            tracked_only = [d for d in detections if d.get("selected")]
+
             if tracking_active:
-                if tracked_only:
-                    # While actively tracking, only draw the tracked target.
-                    overlay = self._draw_boxes(frame.copy(), tracked_only)
-                else:
-                    # Tracking requested but current frame has no target match:
-                    # draw no detection boxes instead of falling back to all boxes.
-                    overlay = frame.copy()
+                overlay = self._draw_tracking_focus(frame.copy(), detections)
             else:
                 if results and len(results) > 0:
                     # Keep YOLO box styling, but suppress default labels.
@@ -412,14 +415,12 @@ class PipelineService:
         )
         with self._tracking_lock:
             self._tracked_detection_id = detection_id
-            self._tracked_label_base = str(selected.get("base_label", "")).lower() or None
             self._tracked_center = center
         return True
 
     def clear_tracking_target(self) -> None:
         with self._tracking_lock:
             self._tracked_detection_id = None
-            self._tracked_label_base = None
             self._tracked_center = None
 
     def tracking_state(self) -> Dict[str, Any]:
@@ -430,36 +431,17 @@ class PipelineService:
     def _resolve_tracking_detection(self, detections: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         with self._tracking_lock:
             target_id = self._tracked_detection_id
-            target_base = self._tracked_label_base
             last_center = self._tracked_center
 
-        if target_id is None and target_base is None:
+        if target_id is None:
             return None
         if not detections:
             return None
 
-        exact = next((d for d in detections if d["id"] == target_id), None) if target_id else None
-        if exact is not None:
-            chosen = exact
-        else:
-            candidates = (
-                [d for d in detections if str(d.get("base_label", "")).lower() == target_base]
-                if target_base
-                else list(detections)
-            )
-            if not candidates:
-                return None
-
-            if last_center is None:
-                chosen = max(candidates, key=lambda d: d.get("confidence", 0.0))
-            else:
-                lx, ly = last_center
-                chosen = min(
-                    candidates,
-                    key=lambda d: (
-                        (((d["x1"] + d["x2"]) / 2.0) - lx) ** 2 + (((d["y1"] + d["y2"]) / 2.0) - ly) ** 2
-                    ),
-                )
+        chosen = next((d for d in detections if d["id"] == target_id), None)
+        if chosen is None:
+            # No fallback reassignment: avoid jumping to a different person.
+            return None
 
         cx = (float(chosen["x1"]) + float(chosen["x2"])) / 2.0
         cy = (float(chosen["y1"]) + float(chosen["y2"])) / 2.0
@@ -471,7 +453,6 @@ class PipelineService:
 
         with self._tracking_lock:
             self._tracked_detection_id = chosen["id"]
-            self._tracked_label_base = str(chosen.get("base_label", "")).lower() or target_base
             self._tracked_center = next_center
 
         return chosen
@@ -522,6 +503,9 @@ class PipelineService:
                 xyxy = boxes.xyxy[idx].tolist()
                 x1, y1, x2, y2 = [int(v) for v in xyxy]
                 base_label = str(names.get(cls_idx, cls_idx)).lower()
+                track_id = None
+                if getattr(boxes, "id", None) is not None and boxes.id[idx] is not None:
+                    track_id = int(boxes.id[idx].item())
             except Exception:
                 continue
 
@@ -535,10 +519,11 @@ class PipelineService:
                     "x2": x2,
                     "y2": y2,
                     "timestamp": timestamp,
+                    "track_id": track_id,
                 }
             )
 
-        # Assign deterministic per-class numbers left-to-right.
+        # Assign IDs: prefer tracker IDs when available.
         raw.sort(key=lambda d: (d["base_label"], d["x1"], d["y1"]))
         per_class_count: Dict[str, int] = {}
         detections: List[Dict[str, Any]] = []
@@ -546,8 +531,11 @@ class PipelineService:
             tracked_id = self._tracked_detection_id
         for item in raw:
             base = item["base_label"]
-            per_class_count[base] = per_class_count.get(base, 0) + 1
-            ordinal = per_class_count[base]
+            if item.get("track_id") is not None:
+                ordinal = int(item["track_id"])
+            else:
+                per_class_count[base] = per_class_count.get(base, 0) + 1
+                ordinal = per_class_count[base]
             label = f"{base.capitalize()} {ordinal}"
             det_id = f"{base}-{ordinal}"
             detections.append(
@@ -610,6 +598,28 @@ class PipelineService:
                 cv2.LINE_AA,
             )
         return overlay
+
+    def _draw_tracking_focus(self, frame: np.ndarray, detections: List[Dict[str, Any]]) -> np.ndarray:
+        base = frame.copy()
+
+        # Draw non-selected detections as faint transparent boxes.
+        faded_layer = base.copy()
+        for det in detections:
+            if det.get("selected"):
+                continue
+            x1 = int(det["x1"])
+            y1 = int(det["y1"])
+            x2 = int(det["x2"])
+            y2 = int(det["y2"])
+            cv2.rectangle(faded_layer, (x1, y1), (x2, y2), (140, 140, 140), 1)
+        base = cv2.addWeighted(faded_layer, 0.35, base, 0.65, 0.0)
+
+        # Draw selected target as normal highlighted box with label.
+        selected = [d for d in detections if d.get("selected")]
+        if selected:
+            base = self._draw_boxes(base, selected)
+
+        return base
 
     def _sample_to_bgr_frame(self, sample: Any) -> Optional[np.ndarray]:
         if Gst is None:
