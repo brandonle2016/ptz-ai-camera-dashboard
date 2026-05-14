@@ -67,6 +67,9 @@ class PipelineService:
         self._tracking_lock = threading.Lock()
         self._tracked_detection_id: Optional[str] = None
         self._tracked_center: Optional[Tuple[float, float]] = None
+        self._video_writer: Optional[cv2.VideoWriter] = None
+        
+        self._smoothed_boxes: Dict[str, Tuple[float, float, float, float]] = {}
 
         self._source_seq = 0
         self._last_processed_seq = -1
@@ -216,6 +219,7 @@ class PipelineService:
         ]
         for thread in self._threads:
             thread.start()
+            
 
     def stop(self) -> None:
         self._running.clear()
@@ -282,6 +286,7 @@ class PipelineService:
                     imgsz=self.settings.yolo_imgsz,
                     conf=self.settings.yolo_confidence,
                     persist=True,
+                    tracker="bytetrack.yaml",
                     verbose=False,
                 )
             except Exception as track_err:
@@ -323,7 +328,7 @@ class PipelineService:
             with self._detections_lock:
                 self._latest_detections = detections
             self.metrics.set_timing(latency_ms=latency_ms, inference_ms=inference_ms)
-
+            
     def _encoder_loop(self) -> None:
         frame_duration_ns = int(1e9 / max(1, self.settings.fps))
         while self._running.is_set():
@@ -527,8 +532,14 @@ class PipelineService:
         raw.sort(key=lambda d: (d["base_label"], d["x1"], d["y1"]))
         per_class_count: Dict[str, int] = {}
         detections: List[Dict[str, Any]] = []
+        
+        # --- NEW CODE: Setup filter variables ---
+        alpha = 0.6 
+        current_frame_ids = set()
+
         with self._tracking_lock:
             tracked_id = self._tracked_detection_id
+            
         for item in raw:
             base = item["base_label"]
             if item.get("track_id") is not None:
@@ -536,22 +547,48 @@ class PipelineService:
             else:
                 per_class_count[base] = per_class_count.get(base, 0) + 1
                 ordinal = per_class_count[base]
+            
             label = f"{base.capitalize()} {ordinal}"
             det_id = f"{base}-{ordinal}"
+            
+            # --- NEW CODE: Record the ID as currently visible ---
+            current_frame_ids.add(det_id)
+
+            # --- NEW CODE: Apply the EMA Filter ---
+            raw_box = (float(item["x1"]), float(item["y1"]), float(item["x2"]), float(item["y2"]))
+            
+            if det_id in self._smoothed_boxes:
+                old_box = self._smoothed_boxes[det_id]
+                smooth_box = (
+                    alpha * raw_box[0] + (1.0 - alpha) * old_box[0],
+                    alpha * raw_box[1] + (1.0 - alpha) * old_box[1],
+                    alpha * raw_box[2] + (1.0 - alpha) * old_box[2],
+                    alpha * raw_box[3] + (1.0 - alpha) * old_box[3],
+                )
+            else:
+                smooth_box = raw_box
+                
+            self._smoothed_boxes[det_id] = smooth_box
+            # ------------------------------------
+
+            # Notice that x1, y1, x2, y2 now use smooth_box instead of item!
             detections.append(
                 {
                     "id": det_id,
                     "label": label,
                     "base_label": base,
                     "confidence": item["confidence"],
-                    "x1": item["x1"],
-                    "y1": item["y1"],
-                    "x2": item["x2"],
-                    "y2": item["y2"],
+                    "x1": smooth_box[0], 
+                    "y1": smooth_box[1],
+                    "x2": smooth_box[2],
+                    "y2": smooth_box[3],
                     "timestamp": item["timestamp"],
                     "selected": det_id == tracked_id,
                 }
             )
+
+        # --- NEW CODE: Cleanup old IDs ---
+        self._smoothed_boxes = {k: v for k, v in self._smoothed_boxes.items() if k in current_frame_ids}
 
         detections.sort(key=lambda d: d["confidence"], reverse=True)
         return detections

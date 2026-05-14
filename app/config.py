@@ -36,6 +36,8 @@ class Settings:
     yolo_confidence: float = float(os.getenv("YOLO_CONFIDENCE", "0.40"))
     sensor_id: int = int(os.getenv("CSI_SENSOR_ID", "0"))
     flip_method: int = int(os.getenv("CSI_FLIP_METHOD", "2"))
+
+    
     @property
     def gstreamer_pipeline(self) -> str:
         return (
